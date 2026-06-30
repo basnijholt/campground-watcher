@@ -1,0 +1,1541 @@
+[
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483647,
+    "map_id": null,
+    "name": "Alta Lake State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483646,
+    "map_id": null,
+    "name": "Battle Ground Lake State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483527,
+    "map_id": null,
+    "name": "Anderson Lake",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483645,
+    "map_id": null,
+    "name": "Bay View State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483643,
+    "map_id": null,
+    "name": "Belfair State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483642,
+    "map_id": null,
+    "name": "Big Eddy",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483641,
+    "map_id": null,
+    "name": "Birch Bay State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483640,
+    "map_id": null,
+    "name": "Blake Island State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483479,
+    "map_id": null,
+    "name": "Blind Island",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483639,
+    "map_id": null,
+    "name": "Bogachiel State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483526,
+    "map_id": null,
+    "name": "Bottle Beach",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483638,
+    "map_id": null,
+    "name": "Bridgeport State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483637,
+    "map_id": null,
+    "name": "Bridle Trails",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483635,
+    "map_id": null,
+    "name": "Burrows Island",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483539,
+    "map_id": null,
+    "name": "Cama Beach State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483538,
+    "map_id": null,
+    "name": "Camano Island State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483488,
+    "map_id": null,
+    "name": "Camano Island State Park (Cabins)",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483633,
+    "map_id": null,
+    "name": "Cape Disappointment State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483525,
+    "map_id": null,
+    "name": "Centennial Trail",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483632,
+    "map_id": null,
+    "name": "Chance a la Mer OBA",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483631,
+    "map_id": null,
+    "name": "Clark Island",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483524,
+    "map_id": null,
+    "name": "Columbia Plateau Trail-Central",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483629,
+    "map_id": null,
+    "name": "Columbia Plateau Trail-North",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483628,
+    "map_id": null,
+    "name": "Conconully State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483627,
+    "map_id": null,
+    "name": "Curlew Lake State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483626,
+    "map_id": null,
+    "name": "Daroga State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483625,
+    "map_id": null,
+    "name": "Dash Point State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483624,
+    "map_id": null,
+    "name": "Deception Pass State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483623,
+    "map_id": null,
+    "name": "Doe Island",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483622,
+    "map_id": null,
+    "name": "Dosewallips State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483522,
+    "map_id": null,
+    "name": "Doug's Beach",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483621,
+    "map_id": null,
+    "name": "Dry Falls State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483521,
+    "map_id": null,
+    "name": "EA Region Office",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483620,
+    "map_id": null,
+    "name": "Federation Forest State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483618,
+    "map_id": null,
+    "name": "Flaming Geyser State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483520,
+    "map_id": null,
+    "name": "Forks of the Sky",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483617,
+    "map_id": null,
+    "name": "Fort Casey State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483537,
+    "map_id": null,
+    "name": "Fort Columbia State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483616,
+    "map_id": null,
+    "name": "Fort Ebey State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483615,
+    "map_id": null,
+    "name": "Fort Flagler State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483614,
+    "map_id": null,
+    "name": "Fort Simcoe",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483613,
+    "map_id": null,
+    "name": "Fort Townsend State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483611,
+    "map_id": null,
+    "name": "Ginkgo IC",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483536,
+    "map_id": null,
+    "name": "Goldendale Observatory State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483609,
+    "map_id": null,
+    "name": "Griffiths-Priday State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483518,
+    "map_id": null,
+    "name": "Hope Island (Mason)",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483608,
+    "map_id": null,
+    "name": "Ike Kinswa State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483607,
+    "map_id": null,
+    "name": "Illahee State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483517,
+    "map_id": null,
+    "name": "Information Center/Front Desk",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483605,
+    "map_id": null,
+    "name": "James Island",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483602,
+    "map_id": null,
+    "name": "Joseph Whidbey",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483601,
+    "map_id": null,
+    "name": "Kanaskat-Palmer State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483515,
+    "map_id": null,
+    "name": "Kinney Point",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483600,
+    "map_id": null,
+    "name": "Kitsap Memorial State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483514,
+    "map_id": null,
+    "name": "Klickitat Trail",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483599,
+    "map_id": null,
+    "name": "Lake Chelan State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483598,
+    "map_id": null,
+    "name": "Lake Easton State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483597,
+    "map_id": null,
+    "name": "Lake Isabella",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483596,
+    "map_id": null,
+    "name": "Lake Sammamish State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483595,
+    "map_id": null,
+    "name": "Lake Sylvia State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483594,
+    "map_id": null,
+    "name": "Lake Wenatchee State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483593,
+    "map_id": null,
+    "name": "Larrabee State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483511,
+    "map_id": null,
+    "name": "Lewis & Clark IC",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483592,
+    "map_id": null,
+    "name": "Lewis and Clark State Park (SW Washington)",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483591,
+    "map_id": null,
+    "name": "Lewis and Clark Trail State Park (SE Washington)",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483590,
+    "map_id": null,
+    "name": "Lincoln Rock State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483532,
+    "map_id": null,
+    "name": "Lyons Ferry State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483589,
+    "map_id": null,
+    "name": "Manchester State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483587,
+    "map_id": null,
+    "name": "Matia Island",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483509,
+    "map_id": null,
+    "name": "McMicken Island",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483508,
+    "map_id": null,
+    "name": "Miller Peninsula",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483586,
+    "map_id": null,
+    "name": "Millersylvania State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483585,
+    "map_id": null,
+    "name": "Moran State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483507,
+    "map_id": null,
+    "name": "Mount Pilchuk",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483506,
+    "map_id": null,
+    "name": "Mystery Bay",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483583,
+    "map_id": null,
+    "name": "Nolte State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483505,
+    "map_id": null,
+    "name": "NW Region Office",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483504,
+    "map_id": null,
+    "name": "Obstruction Pass State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483582,
+    "map_id": null,
+    "name": "Ocean City State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483580,
+    "map_id": null,
+    "name": "Olallie",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483579,
+    "map_id": null,
+    "name": "Olmstead Place",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483578,
+    "map_id": null,
+    "name": "Oyehut OBA",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483577,
+    "map_id": null,
+    "name": "Pacific Beach State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483503,
+    "map_id": null,
+    "name": "Palouse Falls",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483606,
+    "map_id": null,
+    "name": "Palouse to Cascades",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483516,
+    "map_id": null,
+    "name": "Palouse to Cascades Trail",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483576,
+    "map_id": null,
+    "name": "Paradise Point State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483575,
+    "map_id": null,
+    "name": "Patos Island",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483574,
+    "map_id": null,
+    "name": "Peace Arch State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483573,
+    "map_id": null,
+    "name": "Pearrygin Lake State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483502,
+    "map_id": null,
+    "name": "Peshastin Pinnacles",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483501,
+    "map_id": null,
+    "name": "Pleasant Harbor",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483571,
+    "map_id": null,
+    "name": "Possession Point",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483570,
+    "map_id": null,
+    "name": "Potholes State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483569,
+    "map_id": null,
+    "name": "Potlatch State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483567,
+    "map_id": null,
+    "name": "Rasar State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483500,
+    "map_id": null,
+    "name": "Retreat Center - Brooks Memorial",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483487,
+    "map_id": null,
+    "name": "Retreat Center - Camp Delany",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483472,
+    "map_id": null,
+    "name": "Retreat Center - Camp Moran",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483498,
+    "map_id": null,
+    "name": "Retreat Center - Cornet Bay",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483485,
+    "map_id": null,
+    "name": "Retreat Center - Fields Spring",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483486,
+    "map_id": null,
+    "name": "Retreat Center - Fort Flagler",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483496,
+    "map_id": null,
+    "name": "Retreat Center - Millersylvania",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483499,
+    "map_id": null,
+    "name": "Retreat Center - Ramblewood",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483565,
+    "map_id": null,
+    "name": "Riverside State Park - Bowl and Pitcher",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483564,
+    "map_id": null,
+    "name": "Rockport State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483563,
+    "map_id": null,
+    "name": "S.Cle Elm Depot",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483531,
+    "map_id": null,
+    "name": "Sacajawea State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483562,
+    "map_id": null,
+    "name": "Saddlebag Island",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483530,
+    "map_id": null,
+    "name": "Saint Edward State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483560,
+    "map_id": null,
+    "name": "Scenic Beach State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483558,
+    "map_id": null,
+    "name": "Seaquest State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483557,
+    "map_id": null,
+    "name": "Sequim Bay State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483556,
+    "map_id": null,
+    "name": "Shine Tidelands",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483495,
+    "map_id": null,
+    "name": "Silver Lake Visitors Center",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483555,
+    "map_id": null,
+    "name": "South Whidbey State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483554,
+    "map_id": null,
+    "name": "Spencer Spit State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483494,
+    "map_id": null,
+    "name": "Spring Creek Hatchery",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483553,
+    "map_id": null,
+    "name": "Squak Mtn",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483529,
+    "map_id": null,
+    "name": "Squilchuck State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483552,
+    "map_id": null,
+    "name": "Steamboat Rock State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483493,
+    "map_id": null,
+    "name": "Steptoe Butte",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483475,
+    "map_id": null,
+    "name": "Stuart Island",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483528,
+    "map_id": null,
+    "name": "Sucia Island State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483551,
+    "map_id": null,
+    "name": "Sun Lakes State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483492,
+    "map_id": null,
+    "name": "SW Region Office",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483550,
+    "map_id": null,
+    "name": "Tolmie State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483491,
+    "map_id": null,
+    "name": "Triton Cove",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483474,
+    "map_id": null,
+    "name": "Turn Island",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483549,
+    "map_id": null,
+    "name": "Twanoh State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483546,
+    "map_id": null,
+    "name": "Upright Channel",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483545,
+    "map_id": null,
+    "name": "Wallace Falls State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483544,
+    "map_id": null,
+    "name": "Wanapum State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483543,
+    "map_id": null,
+    "name": "Wenatchee Confluence State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483490,
+    "map_id": null,
+    "name": "Westhaven",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483489,
+    "map_id": null,
+    "name": "Willapa Hills Trail",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483541,
+    "map_id": null,
+    "name": "Wolfe Property",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483540,
+    "map_id": null,
+    "name": "Yakima Sportsman State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483604,
+    "map_id": null,
+    "name": "Jarrell Cove State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483572,
+    "map_id": null,
+    "name": "Penrose Point State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483561,
+    "map_id": null,
+    "name": "Saltwater State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483644,
+    "map_id": null,
+    "name": "Beacon Rock State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483523,
+    "map_id": null,
+    "name": "Crawford",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483559,
+    "map_id": null,
+    "name": "Schafer State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483477,
+    "map_id": null,
+    "name": "Lime Kiln Point State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483533,
+    "map_id": null,
+    "name": "Riverside State Park - Lake Spokane",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483584,
+    "map_id": null,
+    "name": "Mount Spokane State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483603,
+    "map_id": null,
+    "name": "Joemma Beach",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483588,
+    "map_id": null,
+    "name": "Maryhill State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483636,
+    "map_id": null,
+    "name": "Brooks Memorial State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483630,
+    "map_id": null,
+    "name": "Columbia Hills State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483473,
+    "map_id": null,
+    "name": "Retreat Center - Camp Wooten",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483476,
+    "map_id": null,
+    "name": "Posey Island Marine State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483478,
+    "map_id": null,
+    "name": "Jones Island Marine State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483481,
+    "map_id": null,
+    "name": "Riverside Equestrian Area",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483453,
+    "map_id": null,
+    "name": "Fort Worden Campus Operations",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483568,
+    "map_id": null,
+    "name": "Rainbow Falls State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483612,
+    "map_id": null,
+    "name": "Fort Worden State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483610,
+    "map_id": null,
+    "name": "Grayland Beach State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483547,
+    "map_id": null,
+    "name": "Twin Harbors State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483548,
+    "map_id": null,
+    "name": "Twenty-Five Mile Creek State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483471,
+    "map_id": null,
+    "name": "Internet",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483452,
+    "map_id": null,
+    "name": "Beebe Bridge Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483534,
+    "map_id": null,
+    "name": "Kopachuck State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483456,
+    "map_id": null,
+    "name": "Riverside - Sontag Day Use Area",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483619,
+    "map_id": null,
+    "name": "Fields Spring State Park",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 3,
+    "rec_area": "Washington State Parks",
+    "facility_id": -2147483480,
+    "map_id": null,
+    "name": "Riverside HQ",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 6,
+    "rec_area": "Tacoma Power Parks",
+    "facility_id": -2147483646,
+    "map_id": null,
+    "name": "Mossyrock",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 6,
+    "rec_area": "Tacoma Power Parks",
+    "facility_id": -2147483645,
+    "map_id": null,
+    "name": "Taidnapam",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 6,
+    "rec_area": "Tacoma Power Parks",
+    "facility_id": -2147483647,
+    "map_id": null,
+    "name": "Mayfield Lake",
+    "lat": null,
+    "lon": null
+  },
+  {
+    "rec_area_id": 6,
+    "rec_area": "Tacoma Power Parks",
+    "facility_id": -2147483648,
+    "map_id": null,
+    "name": "Alder Lake",
+    "lat": null,
+    "lon": null
+  }
+]

@@ -1,0 +1,19 @@
+# Runtime artifacts (generated when the watcher runs)
+alerts.jsonl
+watch.log
+cron.log
+last_state.json
+sent_pings.json
+*.run.lock
+.run.lock
+
+# Secrets / local config
+secrets/
+*.key
+.env
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
