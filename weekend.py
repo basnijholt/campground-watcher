@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = []
+# ///
 """Show campgrounds with a run covering specific nights (default: next Fri+Sat)."""
 import datetime as dt
 import json

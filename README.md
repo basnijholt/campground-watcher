@@ -33,10 +33,11 @@ it costs nothing to run and is fully reproducible.
 
 ## Requirements
 
-- Python 3.12+
-- [`uv`](https://docs.astral.sh/uv/) (recommended — the scripts use PEP 723
-  inline dependencies, so `uv run` handles everything). Or a venv with
-  [`camply`](https://github.com/juftin/camply) installed.
+- Python 3.10+
+- [`uv`](https://docs.astral.sh/uv/) — every script has a `uv` shebang and a
+  PEP 723 inline dependency block, so you can run them directly
+  (`./watch.py`) and uv resolves and caches the dependencies automatically.
+  No manual venv or `pip install` needed.
 
 ## Quick start
 
@@ -46,18 +47,18 @@ export CAMPWATCH_HOME_LAT=47.6062     # your latitude
 export CAMPWATCH_HOME_LON=-122.3321   # your longitude
 
 # 2. (Optional) regenerate the candidate lists for YOUR area:
-uv run --python 3.12 build_candidates.py   # recreation.gov, rating >= 4, within ~90mi
-uv run --python 3.12 build_wa_parks.py     # WA State Parks within a ~2h drive
+./build_candidates.py   # recreation.gov, rating >= 4, within ~90mi
+./build_wa_parks.py     # WA State Parks within a ~2h drive
 #    -> these write candidates.json / wa_parks.json, which feed watch_config.json.
 #    (Shipped JSON files are tuned for the Seattle area; rebuild for elsewhere.)
 
 # 3. Run the watcher once
-uv run --python 3.12 watch.py
+./watch.py
 
 # 4. Read what is currently bookable
-uv run --python 3.12 report.py            # everything open in the next 90 days
-uv run --python 3.12 weekend.py           # sites open THIS coming Fri+Sat
-uv run --python 3.12 weekend.py 2026-08-07 2026-08-08   # a specific weekend
+./report.py             # everything open in the next 90 days
+./weekend.py            # sites open THIS coming Fri+Sat
+./weekend.py 2026-08-07 2026-08-08   # a specific weekend
 ```
 
 ## Configuration
@@ -153,7 +154,7 @@ slow part), so a 15-minute interval avoids overlap. `run_watch.sh` also holds a
 | `report.py` | Print everything currently bookable, ranked by distance. |
 | `weekend.py` | Print sites open for a given weekend (single-site, whole-stay). |
 | `run_watch.sh` | Single-tick runner with an overlap lock, for cron/systemd. |
-| `test_watch.py` | Tests (`uv run --python 3.12 test_watch.py`). |
+| `test_watch.py` | Tests (`./test_watch.py`). |
 
 ## Notes & limitations
 

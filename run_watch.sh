@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Campground watcher cron wrapper. Runs every 5 min. LLM-free.
-# A single run takes ~13 min (WA occupancy cross-check), longer than the 5-min
-# timer interval, so guard against overlapping runs with an flock. If a previous
-# run is still going, this invocation exits immediately (non-blocking lock).
+# Campground watcher single-tick runner for cron / systemd. LLM-free.
+# A full run can take ~10-13 min (the WA occupancy cross-check is the slow part),
+# so if you run this on a short interval, guard against overlapping runs with an
+# flock: if a previous tick is still going, this one exits immediately.
 set -euo pipefail
-export PATH="$HOME/.local/bin:/run/current-system/sw/bin:/usr/bin:/bin"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 LOCK="$DIR/.run.lock"
@@ -13,4 +12,5 @@ if ! flock -n 9; then
   echo "[$(date -Is)] previous run still active; skipping this tick" >> "$DIR/cron.log"
   exit 0
 fi
-exec uv run --python 3.12 watch.py >> "$DIR/cron.log" 2>&1
+# watch.py has a uv shebang (PEP 723), so this resolves its own deps.
+exec ./watch.py >> "$DIR/cron.log" 2>&1
