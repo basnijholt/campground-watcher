@@ -360,6 +360,97 @@ class WatchLogicTests(unittest.TestCase):
                     {"rg:1": ["partial-new-result"]},
                 )
 
+    def test_compatible_checkpoint_resumes_completed_target_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            progress_file = Path(tmp) / "scan_progress.json"
+            state_file = Path(tmp) / "last_state.json"
+            state_file.write_text(
+                json.dumps({"rg:1": ["saved"], "rg:2": ["not-checkpointed"]})
+            )
+            progress_file.write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "signature": "same-scan",
+                        "completed_keys": ["rg:1"],
+                    }
+                )
+            )
+            with (
+                mock.patch.object(watch, "SCAN_PROGRESS", progress_file),
+                mock.patch.object(watch, "STATE_FILE", state_file),
+            ):
+                self.assertEqual(
+                    watch._load_resume_checkpoint("same-scan"),
+                    (["rg:1"], {"rg:1": ["saved"]}),
+                )
+                self.assertEqual(watch._load_resume_checkpoint("changed-scan"), ([], {}))
+
+    def test_resumed_state_rebuilds_summary_and_new_alerts(self):
+        cfg = {
+            "recdotgov": [
+                {"id": 1, "name": "Example", "rating": 4.5, "dist_mi": 10.0}
+            ],
+            "going_to_camp": [],
+        }
+        state = {"rg:1": ["A|2026-08-07|2"]}
+        with mock.patch.object(watch, "TARGET_WEEKENDS", None):
+            summary, alerts = watch._summary_from_state(cfg, state, {})
+        self.assertEqual(summary[0]["runs"][0]["site"], "A")
+        self.assertEqual(alerts[0]["new_runs"], ["A|2026-08-07|2"])
+
+    def test_main_skips_targets_from_a_compatible_resume_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_file = root / "watch_config.json"
+            state_file = root / "last_state.json"
+            complete_file = root / "last_complete_state.json"
+            progress_file = root / "scan_progress.json"
+            today = dt.date.today()
+            saved_run = f"A|{today.isoformat()}|2"
+            cfg = {
+                "recdotgov": [
+                    {"id": 1, "name": "Already done", "rating": 4.5, "dist_mi": 1},
+                    {"id": 2, "name": "Still pending", "rating": 4.5, "dist_mi": 2},
+                ],
+                "going_to_camp": [],
+            }
+            config_file.write_text(json.dumps(cfg))
+            state_file.write_text(json.dumps({"rg:1": [saved_run]}))
+            complete_file.write_text(json.dumps({"rg:1": [saved_run]}))
+            with mock.patch.object(watch, "TARGET_WEEKENDS", None):
+                signature = watch._scan_signature(
+                    cfg, today, today + dt.timedelta(days=watch.WINDOW_DAYS)
+                )
+            progress_file.write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "signature": signature,
+                        "completed_keys": ["rg:1"],
+                    }
+                )
+            )
+            with (
+                mock.patch.object(watch, "TARGET_WEEKENDS", None),
+                mock.patch.object(watch, "CONFIG", config_file),
+                mock.patch.object(watch, "STATE_FILE", state_file),
+                mock.patch.object(watch, "COMPLETE_STATE_FILE", complete_file),
+                mock.patch.object(watch, "SCAN_PROGRESS", progress_file),
+                mock.patch.object(watch, "RecreationGovClient", return_value=mock.Mock()),
+                mock.patch.object(watch, "GoingToCampClient", return_value=mock.Mock()),
+                mock.patch.object(watch, "recgov_available_nights", return_value={}) as poll,
+                mock.patch("builtins.print"),
+            ):
+                self.assertEqual(watch.main(), 0)
+            self.assertEqual(poll.call_count, 1)
+            self.assertEqual(poll.call_args.args[1], 2)
+            self.assertEqual(
+                json.loads(state_file.read_text()),
+                {"rg:1": [saved_run], "rg:2": []},
+            )
+            self.assertEqual(json.loads(progress_file.read_text())["status"], "complete")
+
 
 class FakeRecClient:
     def month(self, campground_id, month):

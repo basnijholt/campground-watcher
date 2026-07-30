@@ -68,7 +68,10 @@ Long scans checkpoint `last_state.json` atomically after every campground and
 print `[completed/total]` progress. While a scan is running or if it stops early,
 the report commands warn that unprocessed campgrounds still show their previous
 results. Alert comparisons use a separate last-complete baseline, so an
-interrupted incremental scan cannot suppress an alert on the next run.
+interrupted incremental scan cannot suppress an alert on the next run. Restarting
+the same date window and configuration resumes from the checkpoint and skips
+campground IDs already completed; a date, filter, or configuration change starts
+a fresh scan.
 
 Federal discovery supports two equivalent filtering modes. Both apply the same
 local 90 km validation and report distances explicitly in kilometers and miles:

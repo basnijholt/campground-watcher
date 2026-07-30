@@ -437,6 +437,8 @@ def _write_scan_progress(
     started_at: str,
     completed: int,
     total: int,
+    signature: str,
+    completed_keys: list[str],
     last_target: str | None = None,
 ) -> None:
     now = dt.datetime.now().astimezone().isoformat(timespec="seconds")
@@ -446,12 +448,72 @@ def _write_scan_progress(
         "updated_at": now,
         "completed": completed,
         "total": total,
+        "signature": signature,
+        "completed_keys": completed_keys,
+        "pid": os.getpid(),
     }
     if last_target is not None:
         progress["last_target"] = last_target
     if status in {"complete", "failed"}:
         progress["finished_at"] = now
     atomic_write_json(SCAN_PROGRESS, progress)
+
+
+def _scan_signature(cfg: dict, start: dt.date, end: dt.date) -> str:
+    if TARGET_WEEKENDS is None:
+        target_filter = "all"
+    else:
+        target_filter = [
+            [label, [night.isoformat() for night in nights]]
+            for label, nights in TARGET_WEEKENDS
+        ]
+    payload = {
+        "config": cfg,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "target_filter": target_filter,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _pid_is_alive(pid) -> bool:
+    try:
+        pid = int(pid)
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _load_resume_checkpoint(signature: str) -> tuple[list[str], dict]:
+    """Return completed keys and their saved state for a compatible partial scan."""
+    if not SCAN_PROGRESS.exists() or not STATE_FILE.exists():
+        return [], {}
+    try:
+        progress = json.loads(SCAN_PROGRESS.read_text())
+        if (
+            progress.get("status") not in {"running", "failed"}
+            or progress.get("signature") != signature
+        ):
+            return [], {}
+        pid = progress.get("pid")
+        if (
+            progress.get("status") == "running"
+            and pid != os.getpid()
+            and _pid_is_alive(pid)
+        ):
+            raise RuntimeError("an identical availability scan is already running")
+        snapshot = json.loads(STATE_FILE.read_text())
+        keys = progress.get("completed_keys")
+        if not isinstance(snapshot, dict) or not isinstance(keys, list):
+            return [], {}
+        completed = [str(key) for key in keys if str(key) in snapshot]
+        return completed, {key: snapshot[key] for key in completed}
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return [], {}
 
 
 def _load_sent_pings() -> dict:
@@ -729,6 +791,79 @@ def recgov_available_nights(client, campground_id, start, end):
     return by_site
 
 
+def _summary_from_state(cfg: dict, state: dict, previous: dict):
+    """Rebuild human/alert details so resumed targets need not be polled again."""
+    summary = []
+    new_alerts = []
+
+    def add_entry(key, name, rating, dist_mi, url, link_fn=None):
+        run_keys = state.get(key, [])
+        if not run_keys:
+            return
+        runs = []
+        for run_key in run_keys:
+            site, start_text, nights_text = run_key.rsplit("|", 2)
+            nights = int(nights_text)
+            weekend = covers_target_weekend(dt.date.fromisoformat(start_text), nights)
+            run = {
+                "site": site,
+                "start": start_text,
+                "nights": nights,
+                "weekend": weekend,
+            }
+            if link_fn is not None:
+                try:
+                    run["booking_url"] = link_fn(site, start_text, nights)
+                except Exception:  # noqa: BLE001
+                    run["booking_url"] = url
+            runs.append(run)
+        runs.sort(key=lambda run: (run["start"], run["site"]))
+        entry = {
+            "key": key,
+            "name": name,
+            "rating": rating,
+            "dist_mi": dist_mi,
+            "runs": runs,
+            "url": url,
+        }
+        summary.append(entry)
+        old_keys = set(previous.get(key, []))
+        fresh = sorted(run_key for run_key in run_keys if run_key not in old_keys)
+        if fresh:
+            alert = dict(entry)
+            alert["new_runs"] = fresh
+            alert["detected_at"] = dt.datetime.now().isoformat(timespec="seconds")
+            new_alerts.append(alert)
+
+    for campground in cfg["recdotgov"]:
+        campground_id = campground["id"]
+        add_entry(
+            f"rg:{campground_id}",
+            campground["name"],
+            campground.get("rating"),
+            campground.get("dist_mi"),
+            f"https://www.recreation.gov/camping/campgrounds/{campground_id}",
+            link_fn=lambda site, start_text, nights, _id=campground_id: recgov_booking_url(
+                _id, start_text, nights
+            ),
+        )
+    for campground in cfg["going_to_camp"]:
+        facility_id = campground["id"]
+        domain = GTC_HOSTS[int(campground["rec_area"])]
+        map_id = campground.get("root_map_id")
+        add_entry(
+            f"wa:{facility_id}",
+            campground["name"] + " (WA State Park)",
+            None,
+            None,
+            f"https://{domain}",
+            link_fn=lambda site, start_text, nights, _map=map_id, _facility=facility_id, _domain=domain: gtc_booking_url(
+                _map, _facility, start_text, nights, domain=_domain
+            ),
+        )
+    return summary, new_alerts
+
+
 def main(*, scheduled: bool = False):
     if scheduled and not scheduled_poll_due():
         return 0
@@ -757,23 +892,35 @@ def main(*, scheduled: bool = False):
     # checkpoints update STATE_FILE only, so an interrupted scan cannot consume
     # openings that still need to be alerted on the next complete run.
     prev_state = _load_complete_state()
-    new_state, summary, new_alerts = {}, [], []
     rec_client = RecreationGovClient()
     gtc_client = GoingToCampClient()
     total_targets = len(cfg["recdotgov"]) + len(cfg["going_to_camp"])
-    completed_targets = 0
+    signature = _scan_signature(cfg, start, end)
+    completed_keys, new_state = _load_resume_checkpoint(signature)
+    completed_key_set = set(completed_keys)
+    completed_targets = len(completed_keys)
     started_at = dt.datetime.now().astimezone().isoformat(timespec="seconds")
     last_target = None
+    if completed_targets:
+        log(
+            f"Resuming compatible checkpoint: skipping "
+            f"{completed_targets}/{total_targets} completed campgrounds."
+        )
     _write_scan_progress(
         status="running",
         started_at=started_at,
-        completed=0,
+        completed=completed_targets,
         total=total_targets,
+        signature=signature,
+        completed_keys=completed_keys,
     )
 
-    def checkpoint(name: str):
+    def checkpoint(key: str, name: str):
         nonlocal completed_targets, last_target
-        completed_targets += 1
+        if key not in completed_key_set:
+            completed_keys.append(key)
+            completed_key_set.add(key)
+            completed_targets += 1
         last_target = name
         _write_state_checkpoint(prev_state, new_state)
         _write_scan_progress(
@@ -781,12 +928,14 @@ def main(*, scheduled: bool = False):
             started_at=started_at,
             completed=completed_targets,
             total=total_targets,
+            signature=signature,
+            completed_keys=completed_keys,
             last_target=name,
         )
         log(f"  [{completed_targets}/{total_targets}] checked {name}")
 
-    def process(key, name, rating, dist_mi, by_site, url, link_fn=None):
-        runs = []
+    def process(key, by_site):
+        run_keys = []
         for sname, ds in by_site.items():
             for rs, length in consecutive_runs(ds):
                 if length < MIN_NIGHTS:
@@ -794,61 +943,34 @@ def main(*, scheduled: bool = False):
                 wk = covers_target_weekend(rs, length)
                 if wk is None:
                     continue
-                run = {
-                    "site": sname,
-                    "start": rs.isoformat(),
-                    "nights": length,
-                    "weekend": wk,
-                }
-                if link_fn is not None:
-                    try:
-                        run["booking_url"] = link_fn(sname, rs.isoformat(), length)
-                    except Exception:  # noqa: BLE001
-                        run["booking_url"] = url
-                runs.append(run)
-        if not runs:
-            new_state[key] = []
-            return
-        runs.sort(key=lambda r: (r["start"], r["site"]))
-        run_keys = sorted(f"{r['site']}|{r['start']}|{r['nights']}" for r in runs)
-        new_state[key] = run_keys
-        fresh = [k for k in run_keys if k not in set(prev_state.get(key, []))]
-        entry = {
-            "key": key, "name": name, "rating": rating, "dist_mi": dist_mi,
-            "runs": runs, "url": url,
-        }
-        summary.append(entry)
-        if fresh:
-            a = dict(entry)
-            a["new_runs"] = fresh
-            a["detected_at"] = dt.datetime.now().isoformat(timespec="seconds")
-            new_alerts.append(a)
+                run_keys.append(f"{sname}|{rs.isoformat()}|{length}")
+        new_state[key] = sorted(run_keys)
 
     try:
         # --- recreation.gov ---
         for cg in cfg["recdotgov"]:
             cid = cg["id"]
+            key = f"rg:{cid}"
+            if key in completed_key_set:
+                continue
             try:
                 by_site = recgov_available_nights(rec_client, cid, start, end)
             except Exception as exc:  # noqa: BLE001
                 log(f"  WARN rec.gov #{cid} {cg['name']}: {type(exc).__name__}")
-                new_state[f"rg:{cid}"] = prev_state.get(f"rg:{cid}", [])
+                new_state[key] = prev_state.get(key, [])
             else:
-                process(
-                    f"rg:{cid}", cg["name"], cg.get("rating"), cg.get("dist_mi"), by_site,
-                    f"https://www.recreation.gov/camping/campgrounds/{cid}",
-                    link_fn=lambda site, start, nights, _cid=cid: recgov_booking_url(
-                        _cid, start, nights
-                    ),
-                )
-            checkpoint(cg["name"])
+                process(key, by_site)
+            checkpoint(key, cg["name"])
 
         # --- Washington State Parks (GoingToCamp, direct MAPDATA) ---
         for cg in cfg["going_to_camp"]:
             fid = cg["id"]
+            key = f"wa:{fid}"
+            if key in completed_key_set:
+                continue
             if cg.get("root_map_id") is None:
                 # Non-campground facility (no reservable map); nothing to watch.
-                new_state[f"wa:{fid}"] = prev_state.get(f"wa:{fid}", [])
+                new_state[key] = prev_state.get(key, [])
             else:
                 try:
                     by_site = gtc_available_nights(
@@ -857,29 +979,24 @@ def main(*, scheduled: bool = False):
                     )
                 except Exception as exc:  # noqa: BLE001
                     log(f"  WARN WA park {cg['name']} ({fid}): {type(exc).__name__}")
-                    new_state[f"wa:{fid}"] = prev_state.get(f"wa:{fid}", [])
+                    new_state[key] = prev_state.get(key, [])
                 else:
-                    _map_id = cg.get("root_map_id")
-                    _domain = GTC_HOSTS[int(cg["rec_area"])]
-                    process(
-                        f"wa:{fid}", cg["name"] + " (WA State Park)", None, None, by_site,
-                        f"https://{_domain}",
-                        link_fn=lambda site, start, nights, _m=_map_id, _f=fid, _d=_domain: gtc_booking_url(
-                            _m, _f, start, nights, domain=_d
-                        ),
-                    )
-            checkpoint(cg["name"])
+                    process(key, by_site)
+            checkpoint(key, cg["name"])
     except BaseException:
         _write_scan_progress(
             status="failed",
             started_at=started_at,
             completed=completed_targets,
             total=total_targets,
+            signature=signature,
+            completed_keys=completed_keys,
             last_target=last_target,
         )
         raise
 
     _write_state_checkpoint(prev_state, new_state, complete=True)
+    summary, new_alerts = _summary_from_state(cfg, new_state, prev_state)
     if new_alerts:
         secure_append_jsonl(ALERTS, new_alerts)
         log(f"!! {len(new_alerts)} campground(s) with NEW availability -> alerts.jsonl")
@@ -895,6 +1012,8 @@ def main(*, scheduled: bool = False):
         started_at=started_at,
         completed=completed_targets,
         total=total_targets,
+        signature=signature,
+        completed_keys=completed_keys,
         last_target=last_target,
     )
 
