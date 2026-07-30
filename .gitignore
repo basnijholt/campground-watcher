@@ -4,6 +4,7 @@ watch.log
 cron.log
 last_state.json
 sent_pings.json
+schedule_state.json
 *.run.lock
 .run.lock
 
@@ -11,6 +12,7 @@ sent_pings.json
 secrets/
 *.key
 .env
+watch_targets.json
 
 # Python
 __pycache__/

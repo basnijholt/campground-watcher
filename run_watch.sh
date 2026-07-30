@@ -1,16 +1,24 @@
 #!/usr/bin/env bash
-# Campground watcher single-tick runner for cron / systemd. LLM-free.
-# A full run can take ~10-13 min (the WA occupancy cross-check is the slow part),
-# so if you run this on a short interval, guard against overlapping runs with an
-# flock: if a previous tick is still going, this one exits immediately.
+# Compatibility launcher for cron/launchd. Locking and log rotation are handled
+# portably by run_watch.py using Python's standard library.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$DIR"
-LOCK="$DIR/.run.lock"
-exec 9>"$LOCK"
-if ! flock -n 9; then
-  echo "[$(date -Is)] previous run still active; skipping this tick" >> "$DIR/cron.log"
-  exit 0
+
+if [[ -n "${CAMPWATCH_PYTHON:-}" ]]; then
+  PYTHON_BIN="$CAMPWATCH_PYTHON"
+else
+  PYTHON_BIN=""
+  for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    if [[ -x "$candidate" ]] && "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
+      PYTHON_BIN="$candidate"
+      break
+    fi
+  done
 fi
-# watch.py has a uv shebang (PEP 723), so this resolves its own deps.
-exec ./watch.py >> "$DIR/cron.log" 2>&1
+
+if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
+  echo "campground-watcher requires Python 3.10+; set CAMPWATCH_PYTHON to its absolute path" >&2
+  exit 1
+fi
+
+exec "$PYTHON_BIN" "$DIR/run_watch.py"

@@ -1,532 +1,503 @@
 {
   "recdotgov": [
     {
-      "id": 269838,
-      "name": "HEYBROOK LOOKOUT",
-      "rating": 4.6363635,
-      "dist_mi": 51.4
-    },
-    {
-      "id": 234501,
-      "name": "Middle Fork Campground",
-      "rating": 4.4745765,
-      "dist_mi": 52.2
-    },
-    {
-      "id": 232118,
-      "name": "Turlo Campground",
-      "rating": 4.587629,
-      "dist_mi": 53.9
-    },
-    {
-      "id": 232120,
-      "name": "Verlot Campground",
-      "rating": 4.163636,
-      "dist_mi": 53.9
-    },
-    {
-      "id": 232051,
-      "name": "Gold Basin Campground",
-      "rating": 4.0,
-      "dist_mi": 54.6
-    },
-    {
       "id": 10355712,
       "name": "Falls View Campground",
-      "rating": 4.3333335,
-      "dist_mi": 55.0
-    },
-    {
-      "id": 238903,
-      "name": "Falls View Campground",
-      "rating": null,
-      "dist_mi": 55.0
-    },
-    {
-      "id": 233866,
-      "name": "Red Bridge Campground",
-      "rating": 4.15,
-      "dist_mi": 58.4
-    },
-    {
-      "id": 232074,
-      "name": "Money Creek Campground",
-      "rating": 4.0227275,
-      "dist_mi": 59.5
+      "rating": 4.5,
+      "distance_km": 48.9,
+      "dist_mi": 30.4
     },
     {
       "id": 10355676,
       "name": "Collins Campground",
-      "rating": 5.0,
-      "dist_mi": 61.3
+      "rating": 4.8333335,
+      "distance_km": 52.3,
+      "dist_mi": 32.5
+    },
+    {
+      "id": 234501,
+      "name": "Middle Fork Campground",
+      "rating": 4.484375,
+      "distance_km": 59.6,
+      "dist_mi": 37.1
+    },
+    {
+      "id": 269838,
+      "name": "HEYBROOK LOOKOUT",
+      "rating": 4.652174,
+      "distance_km": 63.7,
+      "dist_mi": 39.6
+    },
+    {
+      "id": 232118,
+      "name": "Turlo Campground",
+      "rating": 4.579439,
+      "distance_km": 67.8,
+      "dist_mi": 42.1
+    },
+    {
+      "id": 232120,
+      "name": "Verlot Campground",
+      "rating": 4.155738,
+      "distance_km": 67.9,
+      "dist_mi": 42.2
+    },
+    {
+      "id": 232035,
+      "name": "Denny Creek Campground",
+      "rating": 4.293269,
+      "distance_km": 70.2,
+      "dist_mi": 43.6
+    },
+    {
+      "id": 233726,
+      "name": "LOUELLA CABIN",
+      "rating": 4.240741,
+      "distance_km": 70.9,
+      "dist_mi": 44.1
+    },
+    {
+      "id": 10355693,
+      "name": "Dungeness Forks Campground",
+      "rating": 4.3,
+      "distance_km": 71.2,
+      "dist_mi": 44.2
+    },
+    {
+      "id": 233866,
+      "name": "Red Bridge Campground",
+      "rating": 4.242857,
+      "distance_km": 72.5,
+      "dist_mi": 45.1
+    },
+    {
+      "id": 247586,
+      "name": "Staircase Campground",
+      "rating": 4.425532,
+      "distance_km": 75.5,
+      "dist_mi": 46.9
+    },
+    {
+      "id": 232018,
+      "name": "Beckler River Campground",
+      "rating": 4.5652175,
+      "distance_km": 76.1,
+      "dist_mi": 47.3
     },
     {
       "id": 232315,
       "name": "Troublesome Creek Campground",
       "rating": 4.292135,
-      "dist_mi": 63.8
+      "distance_km": 76.7,
+      "dist_mi": 47.7
     },
     {
-      "id": 10101398,
-      "name": "Picnic Vista",
-      "rating": 4.866667,
-      "dist_mi": 64.7
+      "id": 10355629,
+      "name": "Brown Creek Campground",
+      "rating": 4.6666665,
+      "distance_km": 77.1,
+      "dist_mi": 47.9
     },
     {
-      "id": 232018,
-      "name": "Beckler River Campground",
-      "rating": 4.5351353,
-      "dist_mi": 65.2
-    },
-    {
-      "id": 232035,
-      "name": "Denny Creek Campground",
-      "rating": 4.263158,
-      "dist_mi": 65.3
-    },
-    {
-      "id": 238906,
-      "name": "Hamma Hamma Campground",
-      "rating": null,
-      "dist_mi": 69.8
+      "id": 232033,
+      "name": "The Dalles Campground",
+      "rating": 4.4545455,
+      "distance_km": 81.4,
+      "dist_mi": 50.6
     },
     {
       "id": 234178,
       "name": "EVERGREEN MOUNTAIN LOOKOUT",
       "rating": 5.0,
-      "dist_mi": 71.8
-    },
-    {
-      "id": 233726,
-      "name": "LOUELLA CABIN",
-      "rating": 4.226415,
-      "dist_mi": 73.7
-    },
-    {
-      "id": 10355693,
-      "name": "Dungeness Forks Campground",
-      "rating": 4.1666665,
-      "dist_mi": 74.5
-    },
-    {
-      "id": 238901,
-      "name": "Dungeness Forks Campground",
-      "rating": null,
-      "dist_mi": 74.5
-    },
-    {
-      "id": 233865,
-      "name": "Clear Creek Campground",
-      "rating": 4.46875,
-      "dist_mi": 74.6
-    },
-    {
-      "id": 233864,
-      "name": "Bedal Campground",
-      "rating": 4.3958335,
-      "dist_mi": 75.3
+      "distance_km": 83.9,
+      "dist_mi": 52.1
     },
     {
       "id": 232064,
       "name": "KACHESS",
-      "rating": 4.121447,
-      "dist_mi": 81.5
+      "rating": 4.1644144,
+      "distance_km": 86.5,
+      "dist_mi": 53.7
     },
     {
-      "id": 232033,
-      "name": "The Dalles Campground",
-      "rating": 4.465409,
-      "dist_mi": 83.2
+      "id": 233865,
+      "name": "Clear Creek Campground",
+      "rating": 4.4864864,
+      "distance_km": 88.6,
+      "dist_mi": 55.1
     },
     {
-      "id": 10300477,
-      "name": "Deer Park Campground",
-      "rating": null,
-      "dist_mi": 83.8
-    },
-    {
-      "id": 247586,
-      "name": "Staircase Campground",
-      "rating": 4.47191,
-      "dist_mi": 86.9
-    },
-    {
-      "id": 232094,
-      "name": "SALMON LA SAC",
-      "rating": 4.2606063,
-      "dist_mi": 89.1
-    },
-    {
-      "id": 10355629,
-      "name": "Brown Creek Campground",
-      "rating": 5.0,
-      "dist_mi": 89.5
+      "id": 233864,
+      "name": "Bedal Campground",
+      "rating": 4.327586,
+      "distance_km": 89.2,
+      "dist_mi": 55.4
     }
   ],
   "going_to_camp": [
     {
-      "id": -2147483530,
-      "name": "Saint Edward State Park",
-      "rec_area": 3,
-      "est_drive_hrs": 0.09,
-      "root_map_id": -2147483296
-    },
-    {
-      "id": -2147483596,
-      "name": "Lake Sammamish State Park",
-      "rec_area": 3,
-      "est_drive_hrs": 0.34,
-      "root_map_id": -2147483401
-    },
-    {
       "id": -2147483640,
       "name": "Blake Island State Park",
       "rec_area": 3,
-      "est_drive_hrs": 0.49,
+      "est_drive_hrs": 0.24,
       "root_map_id": -2147483404
+    },
+    {
+      "id": -2147483530,
+      "name": "Saint Edward State Park",
+      "rec_area": 3,
+      "est_drive_hrs": 0.28,
+      "root_map_id": -2147483296
     },
     {
       "id": -2147483589,
       "name": "Manchester State Park",
       "rec_area": 3,
-      "est_drive_hrs": 0.53,
+      "est_drive_hrs": 0.31,
       "root_map_id": -2147483371
     },
     {
       "id": -2147483607,
       "name": "Illahee State Park",
       "rec_area": 3,
-      "est_drive_hrs": 0.57,
+      "est_drive_hrs": 0.36,
       "root_map_id": -2147483380
     },
     {
-      "id": -2147483600,
-      "name": "Kitsap Memorial State Park",
+      "id": -2147483596,
+      "name": "Lake Sammamish State Park",
       "rec_area": 3,
-      "est_drive_hrs": 0.64,
-      "root_map_id": -2147483378
+      "est_drive_hrs": 0.37,
+      "root_map_id": -2147483401
     },
     {
       "id": -2147483561,
       "name": "Saltwater State Park",
       "rec_area": 3,
-      "est_drive_hrs": 0.67,
+      "est_drive_hrs": 0.46,
       "root_map_id": -2147483419
-    },
-    {
-      "id": -2147483545,
-      "name": "Wallace Falls State Park",
-      "rec_area": 3,
-      "est_drive_hrs": 0.78,
-      "root_map_id": -2147483351
     },
     {
       "id": -2147483625,
       "name": "Dash Point State Park",
       "rec_area": 3,
-      "est_drive_hrs": 0.81,
+      "est_drive_hrs": 0.59,
       "root_map_id": -2147483389
     },
     {
-      "id": -2147483601,
-      "name": "Kanaskat-Palmer State Park",
+      "id": -2147483600,
+      "name": "Kitsap Memorial State Park",
       "rec_area": 3,
-      "est_drive_hrs": 0.87,
-      "root_map_id": -2147483379
+      "est_drive_hrs": 0.59,
+      "root_map_id": -2147483378
     },
     {
       "id": -2147483560,
       "name": "Scenic Beach State Park",
       "rec_area": 3,
-      "est_drive_hrs": 0.87,
+      "est_drive_hrs": 0.7,
       "root_map_id": -2147483359
-    },
-    {
-      "id": -2147483555,
-      "name": "South Whidbey State Park",
-      "rec_area": 3,
-      "est_drive_hrs": 0.89,
-      "root_map_id": -2147483356
-    },
-    {
-      "id": -2147483583,
-      "name": "Nolte State Park",
-      "rec_area": 3,
-      "est_drive_hrs": 0.93,
-      "root_map_id": -2147483400
-    },
-    {
-      "id": -2147483622,
-      "name": "Dosewallips State Park",
-      "rec_area": 3,
-      "est_drive_hrs": 0.94,
-      "root_map_id": -2147483387
-    },
-    {
-      "id": -2147483538,
-      "name": "Camano Island State Park",
-      "rec_area": 3,
-      "est_drive_hrs": 0.96,
-      "root_map_id": -2147483293
-    },
-    {
-      "id": -2147483506,
-      "name": "Mystery Bay",
-      "rec_area": 3,
-      "est_drive_hrs": 0.98,
-      "root_map_id": -2147483194
-    },
-    {
-      "id": -2147483539,
-      "name": "Cama Beach State Park",
-      "rec_area": 3,
-      "est_drive_hrs": 0.99,
-      "root_map_id": -2147483274
     },
     {
       "id": -2147483534,
       "name": "Kopachuck State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.01,
+      "est_drive_hrs": 0.76,
       "root_map_id": -2147483191
     },
     {
-      "id": -2147483615,
-      "name": "Fort Flagler State Park",
+      "id": -2147483622,
+      "name": "Dosewallips State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.03,
-      "root_map_id": -2147483384
+      "est_drive_hrs": 0.78,
+      "root_map_id": -2147483387
     },
     {
       "id": -2147483643,
       "name": "Belfair State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.06,
+      "est_drive_hrs": 0.82,
       "root_map_id": -2147483319
     },
     {
-      "id": -2147483613,
-      "name": "Fort Townsend State Park",
+      "id": -2147483601,
+      "name": "Kanaskat-Palmer State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.1,
-      "root_map_id": -2147483447
+      "est_drive_hrs": 0.83,
+      "root_map_id": -2147483379
     },
     {
-      "id": -2147483617,
-      "name": "Fort Casey State Park",
+      "id": -2147483583,
+      "name": "Nolte State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.13,
-      "root_map_id": -2147483386
+      "est_drive_hrs": 0.86,
+      "root_map_id": -2147483400
     },
     {
       "id": -2147483572,
       "name": "Penrose Point State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.16,
+      "est_drive_hrs": 0.9,
       "root_map_id": -2147483364
     },
     {
-      "id": -2147483612,
-      "name": "Fort Worden State Park",
+      "id": -2147483555,
+      "name": "South Whidbey State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.16,
-      "root_map_id": -2147483383
+      "est_drive_hrs": 0.97,
+      "root_map_id": -2147483356
     },
     {
       "id": -2147483549,
       "name": "Twanoh State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.22,
+      "est_drive_hrs": 0.98,
       "root_map_id": -2147483398
     },
     {
       "id": -2147483604,
       "name": "Jarrell Cove State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.23,
+      "est_drive_hrs": 0.98,
       "root_map_id": -2147483442
     },
     {
       "id": -2147483603,
       "name": "Joemma Beach",
       "rec_area": 3,
-      "est_drive_hrs": 1.25,
+      "est_drive_hrs": 1.0,
       "root_map_id": -2147483193
     },
     {
       "id": -2147483509,
       "name": "McMicken Island",
       "rec_area": 3,
-      "est_drive_hrs": 1.27,
+      "est_drive_hrs": 1.02,
       "root_map_id": -2147483229
     },
     {
-      "id": -2147483620,
-      "name": "Federation Forest State Park",
+      "id": -2147483545,
+      "name": "Wallace Falls State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.29,
-      "root_map_id": -2147483403
+      "est_drive_hrs": 1.02,
+      "root_map_id": -2147483351
     },
     {
-      "id": -2147483616,
-      "name": "Fort Ebey State Park",
+      "id": -2147483506,
+      "name": "Mystery Bay",
       "rec_area": 3,
-      "est_drive_hrs": 1.29,
-      "root_map_id": -2147483385
+      "est_drive_hrs": 1.03,
+      "root_map_id": -2147483194
     },
     {
-      "id": -2147483557,
-      "name": "Sequim Bay State Park",
+      "id": -2147483538,
+      "name": "Camano Island State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.31,
-      "root_map_id": -2147483357
+      "est_drive_hrs": 1.08,
+      "root_map_id": -2147483293
+    },
+    {
+      "id": -2147483615,
+      "name": "Fort Flagler State Park",
+      "rec_area": 3,
+      "est_drive_hrs": 1.08,
+      "root_map_id": -2147483384
+    },
+    {
+      "id": -2147483539,
+      "name": "Cama Beach State Park",
+      "rec_area": 3,
+      "est_drive_hrs": 1.1,
+      "root_map_id": -2147483274
+    },
+    {
+      "id": -2147483613,
+      "name": "Fort Townsend State Park",
+      "rec_area": 3,
+      "est_drive_hrs": 1.13,
+      "root_map_id": -2147483447
     },
     {
       "id": -2147483550,
       "name": "Tolmie State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.39,
+      "est_drive_hrs": 1.14,
       "root_map_id": -2147483305
     },
     {
       "id": -2147483518,
       "name": "Hope Island (Mason)",
       "rec_area": 3,
-      "est_drive_hrs": 1.43,
+      "est_drive_hrs": 1.17,
       "root_map_id": -2147483230
+    },
+    {
+      "id": -2147483617,
+      "name": "Fort Casey State Park",
+      "rec_area": 3,
+      "est_drive_hrs": 1.21,
+      "root_map_id": -2147483386
+    },
+    {
+      "id": -2147483612,
+      "name": "Fort Worden State Park",
+      "rec_area": 3,
+      "est_drive_hrs": 1.21,
+      "root_map_id": -2147483383
     },
     {
       "id": -2147483569,
       "name": "Potlatch State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.46,
+      "est_drive_hrs": 1.22,
       "root_map_id": -2147483337
     },
     {
-      "id": -2147483624,
-      "name": "Deception Pass State Park",
+      "id": -2147483620,
+      "name": "Federation Forest State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.52,
-      "root_map_id": -2147483388
+      "est_drive_hrs": 1.26,
+      "root_map_id": -2147483403
     },
     {
-      "id": -2147483645,
-      "name": "Bay View State Park",
+      "id": -2147483557,
+      "name": "Sequim Bay State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.63,
-      "root_map_id": -2147483394
+      "est_drive_hrs": 1.28,
+      "root_map_id": -2147483357
     },
     {
-      "id": -2147483598,
-      "name": "Lake Easton State Park",
+      "id": -2147483616,
+      "name": "Fort Ebey State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.65,
-      "root_map_id": -2147483376
-    },
-    {
-      "id": -2147483567,
-      "name": "Rasar State Park",
-      "rec_area": 3,
-      "est_drive_hrs": 1.69,
-      "root_map_id": -2147483362
-    },
-    {
-      "id": -2147483564,
-      "name": "Rockport State Park",
-      "rec_area": 3,
-      "est_drive_hrs": 1.77,
-      "root_map_id": -2147483307
-    },
-    {
-      "id": -2147483605,
-      "name": "James Island",
-      "rec_area": 3,
-      "est_drive_hrs": 1.8,
-      "root_map_id": -2147483222
+      "est_drive_hrs": 1.36,
+      "root_map_id": -2147483385
     },
     {
       "id": -2147483586,
       "name": "Millersylvania State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.84,
+      "est_drive_hrs": 1.6,
       "root_map_id": -2147483369
     },
     {
-      "id": -2147483554,
-      "name": "Spencer Spit State Park",
+      "id": -2147483624,
+      "name": "Deception Pass State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.89,
-      "root_map_id": -2147483355
+      "est_drive_hrs": 1.64,
+      "root_map_id": -2147483388
     },
     {
-      "id": -2147483593,
-      "name": "Larrabee State Park",
+      "id": -2147483598,
+      "name": "Lake Easton State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.95,
-      "root_map_id": -2147483374
+      "est_drive_hrs": 1.71,
+      "root_map_id": -2147483376
     },
     {
-      "id": -2147483474,
-      "name": "Turn Island",
+      "id": -2147483645,
+      "name": "Bay View State Park",
       "rec_area": 3,
-      "est_drive_hrs": 1.96,
-      "root_map_id": -2147483220
-    },
-    {
-      "id": -2147483504,
-      "name": "Obstruction Pass State Park",
-      "rec_area": 3,
-      "est_drive_hrs": 2.0,
-      "root_map_id": -2147483232
-    },
-    {
-      "id": -2147483594,
-      "name": "Lake Wenatchee State Park",
-      "rec_area": 3,
-      "est_drive_hrs": 2.02,
-      "root_map_id": -2147483375
-    },
-    {
-      "id": -2147483479,
-      "name": "Blind Island",
-      "rec_area": 3,
-      "est_drive_hrs": 2.03,
-      "root_map_id": -2147483223
+      "est_drive_hrs": 1.78,
+      "root_map_id": -2147483394
     },
     {
       "id": -2147483559,
       "name": "Schafer State Park",
       "rec_area": 3,
-      "est_drive_hrs": 2.09,
+      "est_drive_hrs": 1.84,
       "root_map_id": -2147483417
+    },
+    {
+      "id": -2147483605,
+      "name": "James Island",
+      "rec_area": 3,
+      "est_drive_hrs": 1.91,
+      "root_map_id": -2147483222
+    },
+    {
+      "id": -2147483567,
+      "name": "Rasar State Park",
+      "rec_area": 3,
+      "est_drive_hrs": 1.91,
+      "root_map_id": -2147483362
+    },
+    {
+      "id": -2147483554,
+      "name": "Spencer Spit State Park",
+      "rec_area": 3,
+      "est_drive_hrs": 1.99,
+      "root_map_id": -2147483355
+    },
+    {
+      "id": -2147483564,
+      "name": "Rockport State Park",
+      "rec_area": 3,
+      "est_drive_hrs": 2.01,
+      "root_map_id": -2147483307
+    },
+    {
+      "id": -2147483474,
+      "name": "Turn Island",
+      "rec_area": 3,
+      "est_drive_hrs": 2.04,
+      "root_map_id": -2147483220
+    },
+    {
+      "id": -2147483593,
+      "name": "Larrabee State Park",
+      "rec_area": 3,
+      "est_drive_hrs": 2.11,
+      "root_map_id": -2147483374
+    },
+    {
+      "id": -2147483504,
+      "name": "Obstruction Pass State Park",
+      "rec_area": 3,
+      "est_drive_hrs": 2.11,
+      "root_map_id": -2147483232
+    },
+    {
+      "id": -2147483479,
+      "name": "Blind Island",
+      "rec_area": 3,
+      "est_drive_hrs": 2.12,
+      "root_map_id": -2147483223
+    },
+    {
+      "id": -2147483608,
+      "name": "Ike Kinswa State Park",
+      "rec_area": 3,
+      "est_drive_hrs": 2.12,
+      "root_map_id": -2147483381
+    },
+    {
+      "id": -2147483595,
+      "name": "Lake Sylvia State Park",
+      "rec_area": 3,
+      "est_drive_hrs": 2.12,
+      "root_map_id": -2147483437
+    },
+    {
+      "id": -2147483594,
+      "name": "Lake Wenatchee State Park",
+      "rec_area": 3,
+      "est_drive_hrs": 2.22,
+      "root_map_id": -2147483375
     },
     {
       "id": -2147483585,
       "name": "Moran State Park",
       "rec_area": 3,
-      "est_drive_hrs": 2.11,
+      "est_drive_hrs": 2.22,
       "root_map_id": -2147483313
-    },
-    {
-      "id": -2147483631,
-      "name": "Clark Island",
-      "rec_area": 3,
-      "est_drive_hrs": 2.13,
-      "root_map_id": -2147483218
     },
     {
       "id": -2147483478,
       "name": "Jones Island Marine State Park",
       "rec_area": 3,
-      "est_drive_hrs": 2.16,
+      "est_drive_hrs": 2.24,
       "root_map_id": -2147483300
-    },
-    {
-      "id": -2147483476,
-      "name": "Posey Island Marine State Park",
-      "rec_area": 3,
-      "est_drive_hrs": 2.25,
-      "root_map_id": -2147483302
     }
   ]
 }

@@ -1,28 +1,19 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.10"
-# dependencies = ["camply"]
-# ///
-"""Discover GoingToCamp (Washington State Parks + Tacoma Power) campground IDs,
-working around camply's buggy _process_facilities_responses by calling the
-provider's low-level API directly with its authenticated session.
+#!/usr/bin/env python3
+"""Discover GoingToCamp (Washington State Parks + Tacoma Power) campground IDs
+by calling the public JSON endpoints directly.
 
 Writes gtc_campgrounds.json: [{rec_area_id, rec_area, facility_id, map_id, name}]
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from camply.providers.going_to_camp.going_to_camp_provider import (
-    ENDPOINTS,
-    GoingToCamp,
-)
+from campwatch_http import GoingToCampClient, atomic_write_json
 
 HERE = Path(__file__).parent
 OUT = HERE / "gtc_campgrounds.json"
 
-# rec-area IDs from `camply recreation-areas --provider GoingToCamp`
+# GoingToCamp recreation-area IDs for the two supported Washington providers.
 WA_REC_AREAS = {
     3: "Washington State Parks",
     6: "Tacoma Power Parks",
@@ -30,19 +21,19 @@ WA_REC_AREAS = {
 
 
 def main():
-    gtc = GoingToCamp()
+    gtc = GoingToCampClient()
     out = []
     for rec_area_id, label in WA_REC_AREAS.items():
         print(f"=== rec-area {rec_area_id}: {label} ===")
         # LIST_CAMPGROUNDS returns resource locations (campgrounds) for the area.
         try:
-            resp = gtc._api_request(rec_area_id, "LIST_CAMPGROUNDS")
+            resp = gtc.request_json(rec_area_id, "LIST_CAMPGROUNDS")
         except Exception as e:  # noqa: BLE001
             print(f"  list error: {e}")
             continue
         # Also fetch CAMP_DETAILS (maps) to map resource_location_id -> mapId.
         try:
-            maps = gtc._api_request(rec_area_id, "CAMP_DETAILS")
+            maps = gtc.request_json(rec_area_id, "CAMP_DETAILS")
         except Exception as e:  # noqa: BLE001
             print(f"  maps error: {e}")
             maps = []
@@ -70,7 +61,7 @@ def main():
             )
             print(f"  #{loc_id}  map={map_by_loc.get(loc_id)}  {name}")
 
-    OUT.write_text(json.dumps(out, indent=2))
+    atomic_write_json(OUT, out, mode=0o644)
     print(f"\nWrote {len(out)} GoingToCamp campgrounds -> {OUT}")
 
 

@@ -1,8 +1,4 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.10"
-# dependencies = []
-# ///
+#!/usr/bin/env python3
 """Print currently-bookable campgrounds from last_state.json, ranked by distance."""
 import json
 from pathlib import Path
