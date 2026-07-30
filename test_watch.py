@@ -326,6 +326,40 @@ class WatchLogicTests(unittest.TestCase):
                     watch.scheduled_poll_due(now + dt.timedelta(minutes=30))
                 )
 
+    def test_incremental_checkpoint_preserves_unprocessed_previous_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "last_state.json"
+            previous = {"rg:1": ["old"], "wa:2": ["not-processed-yet"]}
+            current = {"rg:1": ["new"]}
+            with mock.patch.object(watch, "STATE_FILE", state_file):
+                watch._write_state_checkpoint(previous, current)
+                self.assertEqual(
+                    json.loads(state_file.read_text()),
+                    {"rg:1": ["new"], "wa:2": ["not-processed-yet"]},
+                )
+                watch._write_state_checkpoint(previous, current, complete=True)
+                self.assertEqual(json.loads(state_file.read_text()), current)
+
+    def test_incremental_state_is_not_the_completed_alert_baseline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "last_state.json"
+            complete_file = Path(tmp) / "last_complete_state.json"
+            state_file.write_text('{"rg:1": ["partial-new-result"]}')
+            complete_file.write_text('{"rg:1": ["last-complete-result"]}')
+            with (
+                mock.patch.object(watch, "STATE_FILE", state_file),
+                mock.patch.object(watch, "COMPLETE_STATE_FILE", complete_file),
+            ):
+                self.assertEqual(
+                    watch._load_complete_state(),
+                    {"rg:1": ["last-complete-result"]},
+                )
+                complete_file.unlink()
+                self.assertEqual(
+                    watch._load_complete_state(),
+                    {"rg:1": ["partial-new-result"]},
+                )
+
 
 class FakeRecClient:
     def month(self, campground_id, month):

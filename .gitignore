@@ -3,8 +3,10 @@ alerts.jsonl
 watch.log
 cron.log
 last_state.json
+last_complete_state.json
 sent_pings.json
 schedule_state.json
+scan_progress.json
 *.run.lock
 .run.lock
 

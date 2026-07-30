@@ -255,6 +255,8 @@ HERE = Path(__file__).parent
 CANDIDATES = HERE / "candidates.json"
 CONFIG = HERE / "watch_config.json"
 STATE_FILE = HERE / "last_state.json"
+COMPLETE_STATE_FILE = HERE / "last_complete_state.json"
+SCAN_PROGRESS = HERE / "scan_progress.json"
 ALERTS = HERE / "alerts.jsonl"
 SENT_PINGS = HERE / "sent_pings.json"  # ledger of trigger event-ids already sent
 TARGETS_FILE = HERE / "watch_targets.json"  # private, gitignored trip dates
@@ -410,6 +412,46 @@ def secure_append_jsonl(path: Path, values: list[dict]) -> None:
             handle.write(json.dumps(value) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def _write_state_checkpoint(
+    previous: dict, current: dict, *, complete: bool = False
+) -> None:
+    """Persist completed targets without discarding unprocessed prior results."""
+    snapshot = dict(current) if complete else {**previous, **current}
+    atomic_write_json(STATE_FILE, snapshot)
+
+
+def _load_complete_state() -> dict:
+    """Load the stable alert baseline, migrating an older final state once."""
+    if COMPLETE_STATE_FILE.exists():
+        return json.loads(COMPLETE_STATE_FILE.read_text())
+    previous = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+    atomic_write_json(COMPLETE_STATE_FILE, previous)
+    return previous
+
+
+def _write_scan_progress(
+    *,
+    status: str,
+    started_at: str,
+    completed: int,
+    total: int,
+    last_target: str | None = None,
+) -> None:
+    now = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+    progress = {
+        "status": status,
+        "started_at": started_at,
+        "updated_at": now,
+        "completed": completed,
+        "total": total,
+    }
+    if last_target is not None:
+        progress["last_target"] = last_target
+    if status in {"complete", "failed"}:
+        progress["finished_at"] = now
+    atomic_write_json(SCAN_PROGRESS, progress)
 
 
 def _load_sent_pings() -> dict:
@@ -711,10 +753,37 @@ def main(*, scheduled: bool = False):
         f"window {start}..{end}, min {MIN_NIGHTS} nights; cadence {interval}m"
     )
 
-    prev_state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+    # Preserve the last fully completed result as the alert baseline. Incremental
+    # checkpoints update STATE_FILE only, so an interrupted scan cannot consume
+    # openings that still need to be alerted on the next complete run.
+    prev_state = _load_complete_state()
     new_state, summary, new_alerts = {}, [], []
     rec_client = RecreationGovClient()
     gtc_client = GoingToCampClient()
+    total_targets = len(cfg["recdotgov"]) + len(cfg["going_to_camp"])
+    completed_targets = 0
+    started_at = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+    last_target = None
+    _write_scan_progress(
+        status="running",
+        started_at=started_at,
+        completed=0,
+        total=total_targets,
+    )
+
+    def checkpoint(name: str):
+        nonlocal completed_targets, last_target
+        completed_targets += 1
+        last_target = name
+        _write_state_checkpoint(prev_state, new_state)
+        _write_scan_progress(
+            status="running",
+            started_at=started_at,
+            completed=completed_targets,
+            total=total_targets,
+            last_target=name,
+        )
+        log(f"  [{completed_targets}/{total_targets}] checked {name}")
 
     def process(key, name, rating, dist_mi, by_site, url, link_fn=None):
         runs = []
@@ -755,50 +824,62 @@ def main(*, scheduled: bool = False):
             a["detected_at"] = dt.datetime.now().isoformat(timespec="seconds")
             new_alerts.append(a)
 
-    # --- recreation.gov ---
-    for cg in cfg["recdotgov"]:
-        cid = cg["id"]
-        try:
-            by_site = recgov_available_nights(rec_client, cid, start, end)
-        except Exception as exc:  # noqa: BLE001
-            log(f"  WARN rec.gov #{cid} {cg['name']}: {type(exc).__name__}")
-            new_state[f"rg:{cid}"] = prev_state.get(f"rg:{cid}", [])
-            continue
-        process(
-            f"rg:{cid}", cg["name"], cg.get("rating"), cg.get("dist_mi"), by_site,
-            f"https://www.recreation.gov/camping/campgrounds/{cid}",
-            link_fn=lambda site, start, nights, _cid=cid: recgov_booking_url(
-                _cid, start, nights
-            ),
-        )
+    try:
+        # --- recreation.gov ---
+        for cg in cfg["recdotgov"]:
+            cid = cg["id"]
+            try:
+                by_site = recgov_available_nights(rec_client, cid, start, end)
+            except Exception as exc:  # noqa: BLE001
+                log(f"  WARN rec.gov #{cid} {cg['name']}: {type(exc).__name__}")
+                new_state[f"rg:{cid}"] = prev_state.get(f"rg:{cid}", [])
+            else:
+                process(
+                    f"rg:{cid}", cg["name"], cg.get("rating"), cg.get("dist_mi"), by_site,
+                    f"https://www.recreation.gov/camping/campgrounds/{cid}",
+                    link_fn=lambda site, start, nights, _cid=cid: recgov_booking_url(
+                        _cid, start, nights
+                    ),
+                )
+            checkpoint(cg["name"])
 
-    # --- Washington State Parks (GoingToCamp, direct MAPDATA) ---
-    for cg in cfg["going_to_camp"]:
-        fid = cg["id"]
-        if cg.get("root_map_id") is None:
-            # Non-campground facility (no reservable map); nothing to watch.
-            new_state[f"wa:{fid}"] = prev_state.get(f"wa:{fid}", [])
-            continue
-        try:
-            by_site = gtc_available_nights(
-                cg["rec_area"], fid, start, end,
-                root_map_id=cg.get("root_map_id"), client=gtc_client,
-            )
-        except Exception as exc:  # noqa: BLE001
-            log(f"  WARN WA park {cg['name']} ({fid}): {type(exc).__name__}")
-            new_state[f"wa:{fid}"] = prev_state.get(f"wa:{fid}", [])
-            continue
-        _map_id = cg.get("root_map_id")
-        _domain = GTC_HOSTS[int(cg["rec_area"])]
-        process(
-            f"wa:{fid}", cg["name"] + " (WA State Park)", None, None, by_site,
-            f"https://{_domain}",
-            link_fn=lambda site, start, nights, _m=_map_id, _f=fid, _d=_domain: gtc_booking_url(
-                _m, _f, start, nights, domain=_d
-            ),
+        # --- Washington State Parks (GoingToCamp, direct MAPDATA) ---
+        for cg in cfg["going_to_camp"]:
+            fid = cg["id"]
+            if cg.get("root_map_id") is None:
+                # Non-campground facility (no reservable map); nothing to watch.
+                new_state[f"wa:{fid}"] = prev_state.get(f"wa:{fid}", [])
+            else:
+                try:
+                    by_site = gtc_available_nights(
+                        cg["rec_area"], fid, start, end,
+                        root_map_id=cg.get("root_map_id"), client=gtc_client,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log(f"  WARN WA park {cg['name']} ({fid}): {type(exc).__name__}")
+                    new_state[f"wa:{fid}"] = prev_state.get(f"wa:{fid}", [])
+                else:
+                    _map_id = cg.get("root_map_id")
+                    _domain = GTC_HOSTS[int(cg["rec_area"])]
+                    process(
+                        f"wa:{fid}", cg["name"] + " (WA State Park)", None, None, by_site,
+                        f"https://{_domain}",
+                        link_fn=lambda site, start, nights, _m=_map_id, _f=fid, _d=_domain: gtc_booking_url(
+                            _m, _f, start, nights, domain=_d
+                        ),
+                    )
+            checkpoint(cg["name"])
+    except BaseException:
+        _write_scan_progress(
+            status="failed",
+            started_at=started_at,
+            completed=completed_targets,
+            total=total_targets,
+            last_target=last_target,
         )
+        raise
 
-    atomic_write_json(STATE_FILE, new_state)
+    _write_state_checkpoint(prev_state, new_state, complete=True)
     if new_alerts:
         secure_append_jsonl(ALERTS, new_alerts)
         log(f"!! {len(new_alerts)} campground(s) with NEW availability -> alerts.jsonl")
@@ -808,6 +889,14 @@ def main(*, scheduled: bool = False):
             send_trigger(a["name"], a["url"], a["new_runs"], a["runs"])
     else:
         log("No new availability since last check.")
+    atomic_write_json(COMPLETE_STATE_FILE, new_state)
+    _write_scan_progress(
+        status="complete",
+        started_at=started_at,
+        completed=completed_targets,
+        total=total_targets,
+        last_target=last_target,
+    )
 
     # Human summary (manual run)
     print("\n=== CURRENT QUALIFYING AVAILABILITY ===")

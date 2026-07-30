@@ -64,6 +64,12 @@ cp watch_targets.example.json watch_targets.json
 ./weekend.py 2030-08-09 2030-08-10   # a specific weekend
 ```
 
+Long scans checkpoint `last_state.json` atomically after every campground and
+print `[completed/total]` progress. While a scan is running or if it stops early,
+the report commands warn that unprocessed campgrounds still show their previous
+results. Alert comparisons use a separate last-complete baseline, so an
+interrupted incremental scan cannot suppress an alert on the next run.
+
 Federal discovery supports two equivalent filtering modes. Both apply the same
 local 90 km validation and report distances explicitly in kilometers and miles:
 
