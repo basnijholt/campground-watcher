@@ -62,6 +62,9 @@ cp watch_targets.example.json watch_targets.json
 ./report.py             # everything open in the next 90 days
 ./weekend.py            # sites open THIS coming Fri+Sat
 ./weekend.py 2030-08-09 2030-08-10   # a specific weekend
+
+# Optional live campground map (opens http://127.0.0.1:8765/)
+python3 availability_map.py --open
 ```
 
 Long scans checkpoint `last_state.json` atomically after every campground and
@@ -72,6 +75,20 @@ interrupted incremental scan cannot suppress an alert on the next run. Restartin
 the same date window and configuration resumes from the checkpoint and skips
 campground IDs already completed; a date, filter, or configuration change starts
 a fresh scan.
+
+### Availability map
+
+`availability_map.py` serves an interactive, loopback-only map and refreshes its
+markers every five seconds as scan checkpoints arrive. Markers represent
+campgrounds with qualifying availability; their cards show the number of distinct
+sites, available date span, distance, and direct booking link. Press Ctrl-C in the
+map server's terminal to stop it.
+
+The map installs no Python package and loads no third-party JavaScript. While the
+map is open, the browser requests only the visible raster tiles from OpenStreetMap
+and displays the required attribution. This reveals your IP address and viewed map
+region to OpenStreetMap, but the watcher does not send the availability data or
+home coordinates. See the [OpenStreetMap tile usage policy](https://operations.osmfoundation.org/policies/tiles/).
 
 Federal discovery supports two equivalent filtering modes. Both apply the same
 local 90 km validation and report distances explicitly in kilometers and miles:
@@ -237,6 +254,7 @@ scheduler interval.
 | File | Purpose |
 |---|---|
 | `watch.py` | The watcher. Polls, filters, diffs against last state, notifies. |
+| `availability_map.py` | Loopback-only live OpenStreetMap view of available campgrounds. |
 | `campwatch_config.py` | Safely loads owner-only, Git-ignored local settings. |
 | `campwatch_http.py` | Size-limited, allow-listed standard-library HTTPS clients. |
 | `watch_config.json` | The list of campgrounds to watch (recreation.gov + WA). |

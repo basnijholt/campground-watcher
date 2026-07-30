@@ -14,6 +14,7 @@ from unittest import mock
 import campwatch_http
 import campwatch_config
 import build_candidates
+import availability_map
 import run_watch
 import watch
 
@@ -175,6 +176,80 @@ class ProviderClientTests(unittest.TestCase):
         client = campwatch_http.RecreationGovClient(http=http)
         with self.assertRaises(campwatch_http.HttpRequestError):
             client.month(123, dt.date(2026, 8, 1))
+
+
+class AvailabilityMapTests(unittest.TestCase):
+    def test_map_data_joins_available_state_with_local_coordinates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = {
+                "config_path": root / "watch_config.json",
+                "state_path": root / "last_state.json",
+                "progress_path": root / "scan_progress.json",
+                "candidates_path": root / "candidates.json",
+                "wa_parks_path": root / "wa_parks.json",
+            }
+            paths["config_path"].write_text(
+                json.dumps(
+                    {
+                        "recdotgov": [
+                            {"id": 1, "name": "Federal Camp", "distance_km": 16.1, "dist_mi": 10}
+                        ],
+                        "going_to_camp": [
+                            {
+                                "id": -2,
+                                "name": "State Park",
+                                "rec_area": 3,
+                                "root_map_id": -3,
+                                "est_drive_hrs": 1.2,
+                            }
+                        ],
+                    }
+                )
+            )
+            paths["state_path"].write_text(
+                json.dumps(
+                    {
+                        "rg:1": ["A|2026-08-07|2", "B|2026-08-08|3"],
+                        "wa:-2": ["-20|2026-08-09|2"],
+                    }
+                )
+            )
+            paths["progress_path"].write_text(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "completed": 4,
+                        "total": 10,
+                        "signature": "private-internal-value",
+                        "pid": 123,
+                    }
+                )
+            )
+            paths["candidates_path"].write_text(
+                json.dumps([{"id": 1, "lat": 47.1, "lon": -122.1}])
+            )
+            paths["wa_parks_path"].write_text(
+                json.dumps([{"facility_id": -2, "lat": 47.2, "lon": -122.2}])
+            )
+
+            data = availability_map.build_map_data(**paths)
+            self.assertEqual([item["name"] for item in data["locations"]], [
+                "Federal Camp", "State Park"
+            ])
+            self.assertEqual(data["locations"][0]["available_sites"], 2)
+            self.assertIn("recreation.gov", data["locations"][0]["booking_url"])
+            self.assertIn("goingtocamp.com", data["locations"][1]["booking_url"])
+            self.assertEqual(data["progress"], {
+                "status": "running", "completed": 4, "total": 10
+            })
+            self.assertNotIn("signature", data["progress"])
+            self.assertEqual(data["bounds"]["north"], 47.2)
+
+    def test_map_html_uses_no_external_javascript_and_attributes_tiles(self):
+        self.assertNotIn("<script src=", availability_map.MAP_HTML)
+        self.assertIn("https://tile.openstreetmap.org/{z}/{x}/{y}.png", availability_map.MAP_HTML)
+        self.assertIn("© OpenStreetMap contributors", availability_map.MAP_HTML)
 
 
 class CandidateDiscoveryTests(unittest.TestCase):
