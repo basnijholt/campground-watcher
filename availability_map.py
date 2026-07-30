@@ -294,8 +294,16 @@ MAP_HTML = r"""<!doctype html>
     .more-runs { margin: 5px 1px 8px; color: #536158; font-size: 11px; }
     #hover-card { position: absolute; z-index: 8; width: min(430px, calc(100% - 24px)); padding: 9px 10px;
       border: 1px solid #52645a; border-radius: 8px; background: #fffffff7; box-shadow: 0 4px 16px #0005;
-      pointer-events: none; transform: translate(-50%, -100%); font-size: 12px; }
-    #hover-card strong { display: block; margin-bottom: 3px; font-size: 13px; }
+      transform: translate(-50%, -100%); font-size: 12px; }
+    .hover-card-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 3px; }
+    .hover-card-header strong { min-width: 0; font-size: 13px; }
+    .card-actions { display: flex; flex: none; gap: 4px; }
+    .card-action { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 1px solid #aaa69b;
+      border-radius: 6px; background: white; color: #294536; cursor: pointer; }
+    .card-action:hover, .card-action:focus-visible { border-color: #23704a; outline: 2px solid #a9d8bd; }
+    .card-action[aria-pressed="true"] { border-color: #193c2b; background: #193c2b; color: white; }
+    .card-action svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2;
+      stroke-linecap: round; stroke-linejoin: round; }
     #popup-close { position: absolute; top: 6px; right: 7px; border: 0; background: none; font-size: 20px; cursor: pointer; }
     #attribution { position: absolute; z-index: 5; right: 5px; bottom: 3px; padding: 2px 5px; background: #ffffffe8;
       font-size: 11px; }
@@ -330,7 +338,7 @@ MAP_HTML = r"""<!doctype html>
       <div id="tiles"></div><div id="markers"></div>
       <div id="controls"><button id="zoom-in" title="Zoom in">+</button><button id="zoom-out" title="Zoom out">−</button>
         <button id="fit" title="Fit displayed campgrounds" style="font-size:12px">Fit</button></div>
-      <div id="hover-card" role="tooltip" hidden></div>
+      <aside id="hover-card" role="dialog" aria-label="Campground availability preview" hidden></aside>
       <article id="popup"><button id="popup-close" aria-label="Close">×</button><div id="popup-content"></div></article>
       <div id="attribution"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>
         · <a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noopener">Report a map issue</a></div>
@@ -347,6 +355,10 @@ let initialized = false;
 let filtersInitialized = false;
 let usingAllDates = true;
 let visibleLocations = [];
+let hoverPinned = false;
+let hoverLocationKey = null;
+let hoverMarker = null;
+let hoverHideTimer = null;
 
 const map = document.getElementById("map");
 const tiles = document.getElementById("tiles");
@@ -413,6 +425,31 @@ function makeRunTable(runs, limit, moreText) {
     container.appendChild(more);
   }
   return container;
+}
+
+function makeIcon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const paths = name === "pin"
+    ? ["M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5Z", "M12 13v8"]
+    : ["M6 6l12 12", "M18 6 6 18"];
+  paths.forEach(value => {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", value);
+    svg.appendChild(path);
+  });
+  return svg;
+}
+
+function makeCardAction(label, iconName) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "card-action";
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.appendChild(makeIcon(iconName));
+  return button;
 }
 
 function availableBounds() {
@@ -559,16 +596,73 @@ function showLocation(location) {
   popup.style.display = "block";
 }
 
-function hideHover() {
+function cancelHoverHide() {
+  if (hoverHideTimer != null) {
+    clearTimeout(hoverHideTimer);
+    hoverHideTimer = null;
+  }
+}
+
+function closeHover() {
+  cancelHoverHide();
+  hoverPinned = false;
+  if (hoverMarker) hoverMarker.setAttribute("aria-expanded", "false");
+  hoverLocationKey = null;
+  hoverMarker = null;
   hoverCard.hidden = true;
   hoverCard.replaceChildren();
 }
 
-function showHover(location, button) {
+function scheduleHoverHide() {
+  cancelHoverHide();
+  if (hoverPinned) return;
+  hoverHideTimer = setTimeout(() => {
+    hoverHideTimer = null;
+    const markerActive = hoverMarker
+      && (hoverMarker.matches(":hover") || document.activeElement === hoverMarker);
+    const cardActive = hoverCard.matches(":hover") || hoverCard.contains(document.activeElement);
+    if (!hoverPinned && !markerActive && !cardActive) closeHover();
+  }, 180);
+}
+
+function updatePinAction(button) {
+  const label = hoverPinned ? "Unpin availability card" : "Pin availability card";
+  button.setAttribute("aria-label", label);
+  button.setAttribute("aria-pressed", String(hoverPinned));
+  button.title = label;
+}
+
+function showHover(location, button, restorePinned = false) {
+  cancelHoverHide();
+  if (hoverPinned && hoverLocationKey !== location.key && !restorePinned) return;
+  if (hoverMarker && hoverMarker !== button) hoverMarker.setAttribute("aria-expanded", "false");
+  hoverLocationKey = location.key;
+  hoverMarker = button;
+  button.setAttribute("aria-expanded", "true");
   hoverCard.replaceChildren();
+  hoverCard.setAttribute("aria-label", `${location.name} availability preview`);
+  const header = document.createElement("div");
+  header.className = "hover-card-header";
   const title = document.createElement("strong");
   title.textContent = location.name;
-  hoverCard.append(title, makeRunTable(location.runs, 5, "; click for details"));
+  const actions = document.createElement("div");
+  actions.className = "card-actions";
+  const pinButton = makeCardAction("Pin availability card", "pin");
+  updatePinAction(pinButton);
+  pinButton.addEventListener("click", event => {
+    event.stopPropagation();
+    hoverPinned = !hoverPinned;
+    updatePinAction(pinButton);
+    if (!hoverPinned) scheduleHoverHide();
+  });
+  const closeButton = makeCardAction("Close availability card", "close");
+  closeButton.addEventListener("click", event => {
+    event.stopPropagation();
+    closeHover();
+  });
+  actions.append(pinButton, closeButton);
+  header.append(title, actions);
+  hoverCard.append(header, makeRunTable(location.runs, 5, "; click the marker for details"));
   const markerX = Number.parseFloat(button.style.left);
   const markerY = Number.parseFloat(button.style.top);
   hoverCard.hidden = false;
@@ -578,31 +672,35 @@ function showHover(location, button) {
 }
 
 function renderMarkers() {
-  hideHover();
+  const pinnedKey = hoverPinned ? hoverLocationKey : null;
+  if (!pinnedKey) closeHover();
   markers.replaceChildren();
   if (!mapData) return;
   const origin = viewportOrigin();
+  let pinnedTarget = null;
   visibleLocations.forEach((location, index) => {
     const point = project(location.lat, location.lon, zoom);
     const button = document.createElement("button");
     button.className = `marker ${location.key.startsWith("rg:") ? "rg" : "wa"}`;
     button.textContent = String(index + 1);
     button.setAttribute("aria-label", `${location.name}: ${location.available_sites} sites, ${location.earliest} through ${location.latest_night}`);
-    button.setAttribute("aria-describedby", "hover-card");
+    button.setAttribute("aria-haspopup", "dialog");
+    button.setAttribute("aria-expanded", "false");
     button.style.left = `${point.x - origin.x}px`;
     button.style.top = `${point.y - origin.y}px`;
     button.addEventListener("click", () => {
-      hideHover();
+      closeHover();
       showLocation(location);
     });
     button.addEventListener("pointerenter", () => showHover(location, button));
-    button.addEventListener("pointerleave", () => {
-      if (document.activeElement !== button) hideHover();
-    });
+    button.addEventListener("pointerleave", scheduleHoverHide);
     button.addEventListener("focus", () => showHover(location, button));
-    button.addEventListener("blur", hideHover);
+    button.addEventListener("blur", scheduleHoverHide);
     markers.appendChild(button);
+    if (location.key === pinnedKey) pinnedTarget = {location, button};
   });
+  if (pinnedKey && pinnedTarget) showHover(pinnedTarget.location, pinnedTarget.button, true);
+  else if (pinnedKey) closeHover();
 }
 
 function renderMap() { renderTiles(); renderMarkers(); }
@@ -739,6 +837,13 @@ dateFrom.addEventListener("input", () => applyDateFilter(dateFrom));
 dateThrough.addEventListener("input", () => applyDateFilter(dateThrough));
 document.querySelectorAll("#presets button").forEach(button => {
   button.addEventListener("click", () => applyPreset(button.dataset.days));
+});
+hoverCard.addEventListener("pointerenter", cancelHoverHide);
+hoverCard.addEventListener("pointerleave", scheduleHoverHide);
+hoverCard.addEventListener("focusin", cancelHoverHide);
+hoverCard.addEventListener("focusout", scheduleHoverHide);
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && !hoverCard.hidden) closeHover();
 });
 window.addEventListener("resize", () => { if (initialized) renderMap(); });
 refreshData();
