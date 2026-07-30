@@ -1,19 +1,13 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.10"
-# dependencies = ["camply"]
-# ///
+#!/usr/bin/env python3
 """Unified campground availability watcher (recreation.gov + Washington State Parks).
 
 Robust design:
-- Drives ALL availability through camply's Python API (handles auth / encoding /
-  Azure WAF for both RecreationDotGov and GoingToCamp providers).
-- Monkeypatches a known camply GoingToCamp bug (_process_facilities_responses
-  raises KeyError on facilities missing from campground_details).
+- Uses only the Python standard library; nothing is downloaded or installed.
+- Calls the public Recreation.gov and GoingToCamp HTTPS endpoints directly.
 - Applies filters: exclude group/overflow sites,
   require >= MIN_NIGHTS consecutive nights.
 - Diffs vs last_state.json; appends NEW availability to alerts.jsonl.
-- LLM-free; meant to run from cron every 10 min. A manual run prints a summary.
+- LLM-free; its scheduler uses adaptive polling. A manual run prints a summary.
 
 Config lives in watch_config.json (campground IDs to watch). If absent, it is
 auto-built on first run from candidates.json (recreation.gov) + the curated WA
@@ -21,81 +15,37 @@ State Parks list.
 """
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import hashlib
+import ipaddress
 import json
 import os
-import urllib.request
+import socket
 import sys
 import traceback
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
-# ---- monkeypatch camply GoingToCamp bugs BEFORE importing search classes ----
-# ROOT CAUSE (HTTP 400 on every WA State Park):
-#   camply's _process_facilities_responses resolves a facility's mapId from the
-#   CAMP_DETAILS endpoint (/api/maps). For Washington State Parks that endpoint
-#   returns only 6 region-level maps, ALL with resourceLocationId == null, so the
-#   per-facility lookup always yields None. MAPDATA then gets mapId=None and the
-#   GoingToCamp API replies 400 Bad Request.
-# FIX:
-#   The correct per-facility map is facility["rootMapId"] from the
-#   LIST_CAMPGROUNDS endpoint (/api/resourceLocation). We build a
-#   resource_location_id -> rootMapId map once per provider instance and use it.
-#   camply's own list_site_availability then traverses the child maps
-#   (mapLinkAvailabilities) where the real campsite resources live.
-from camply.providers.going_to_camp import going_to_camp_provider as _gtc
-from camply.containers import CampgroundFacility
+from campwatch_http import (
+    GTC_HOSTS,
+    GoingToCampClient,
+    HttpRequestError,
+    RecreationGovClient,
+    atomic_write_json,
+)
 
-
-def _rootmap_index(self, rec_area_id):
-    """resource_location_id -> rootMapId, cached on the provider instance."""
-    cache = getattr(self, "_rootmap_cache", None)
-    if cache is None:
-        cache = self._rootmap_cache = {}
-    if rec_area_id not in cache:
-        idx = {}
-        for fac in self._api_request(rec_area_id, "LIST_CAMPGROUNDS"):
-            rli = fac.get("resourceLocationId")
-            if rli is not None:
-                idx[rli] = fac.get("rootMapId")
-        cache[rec_area_id] = idx
-    return cache[rec_area_id]
-
-
-def _patched_process(self, rec_area, facility):
-    # Resolve mapId from rootMapId (LIST_CAMPGROUNDS), NOT the broken
-    # CAMP_DETAILS lookup that always returns None for WA State Parks.
-    idx = _rootmap_index(self, facility.rec_area_id)
-    facility.id = idx.get(facility.resource_location_id)
-    if facility.region_name:
-        formatted = f"{rec_area.recreation_area}, {facility.region_name}"
-    else:
-        formatted = f"{rec_area.recreation_area}"
-    cg = CampgroundFacility(
-        facility_name=facility.resource_location_name,
-        recreation_area=formatted,
-        facility_id=facility.resource_location_id,
-        recreation_area_id=facility.rec_area_id,
-        map_id=facility.id,
-    )
-    return facility, cg
-
-
-_gtc.GoingToCamp._process_facilities_responses = _patched_process
-# ---------------------------------------------------------------------------
-
-# ---- direct GoingToCamp availability (bypasses camply's broken search) -------
-# camply's SearchGoingToCamp.get_all_campsites() also calls get_site_details()
-# against /api/resource/details, which now returns HTTP 404 (the endpoint was
-# removed/moved by GoingToCamp). We do NOT need per-site details for an
-# availability alert. Instead we hit MAPDATA directly:
+# ---- direct GoingToCamp availability -----------------------------------------
+# We do not need per-site details for an availability alert. Instead:
 #   1. resolve the park's rootMapId (LIST_CAMPGROUNDS)
 #   2. MAPDATA on rootMapId returns child mapIds in mapLinkAvailabilities
 #   3. MAPDATA on each child map (getDailyAvailability=True) returns
 #      resourceAvailabilities: {resourceId: [ {availability: 1|2|3|...}, ... ]}
 #      where the slot list is one entry per night in [start, end), in order.
-#   availability == 2 means that night is OPEN/bookable (see _GTC_AVAILABLE).
-NON_GROUP_EQUIPMENT = _gtc.NON_GROUP_EQUIPMENT
+#   availability == 0 means that night is a candidate; occupancy confirms it.
+NON_GROUP_EQUIPMENT = -32768
 
 # GoingToCamp daily-availability "available" code.
 # Empirically decoded 2026-06-15 by comparing in-season vs winter code
@@ -105,9 +55,8 @@ NON_GROUP_EQUIPMENT = _gtc.NON_GROUP_EQUIPMENT
 #   2 = NOT OPERATING/closed  -- CONSTANT all dates (e.g. Saltwater = all 2)
 #   3 = not in season / not yet released
 #   4/5 = non-bookable (utility/group/special), effectively constant
-# This matches camply's own check (availability == 0). A prior "fix" to ==2
-# was WRONG: it reported CLOSED parks (all 2) as available. Verified against
-# the live site (Saltwater showed "Not Operating", code 2).
+# A prior interpretation of code 2 was wrong: it reported closed parks as
+# available. The booking UI and occupancy endpoint confirm that code 0 is open.
 _GTC_AVAILABLE = 0
 
 # GoingToCamp occupancy "available" code (separate enum from MAPDATA).
@@ -115,25 +64,28 @@ _GTC_AVAILABLE = 0
 # The booking site's frontend uses /api/occupancy as the source of truth for
 # what is actually web-bookable. A site can be MAPDATA-available (0) yet NOT
 # web-bookable (walk-in / host / hold) -- occupancy is what filters those out.
-# Fix discovered by codex against upstream camply (PR-style); ported here so the
-# watcher stays self-contained. Verified: Fort Townsend 2026-07-03..05 phantom
-# site -2147480786 is correctly excluded (matches the live booking site).
 _GTC_OCCUPANCY_AVAILABLE = 0
-
-# Register the endpoints the stock installed camply lacks (idempotent).
-if "OCCUPANCY" not in _gtc.ENDPOINTS:
-    _gtc.ENDPOINTS["OCCUPANCY"] = "https://{}/api/occupancy"
-if "BOOKING_CATEGORIES" not in _gtc.ENDPOINTS:
-    _gtc.ENDPOINTS["BOOKING_CATEGORIES"] = "https://{}/api/bookingCategories"
 
 # Per-rec-area caches so we hit the metadata endpoints once.
 _booking_categories_cache: dict = {}
 _sub_equipment_cache: dict = {}
 
 
-def _booking_category(provider, rec_area_id, booking_category_id=0):
+class AvailabilityVerificationError(RuntimeError):
+    """The authoritative occupancy endpoint could not verify a park."""
+
+
+def _rootmap_index(client, rec_area_id):
+    return {
+        fac.get("resourceLocationId"): fac.get("rootMapId")
+        for fac in client.request_json(rec_area_id, "LIST_CAMPGROUNDS")
+        if fac.get("resourceLocationId") is not None
+    }
+
+
+def _booking_category(client, rec_area_id, booking_category_id=0):
     if rec_area_id not in _booking_categories_cache:
-        _booking_categories_cache[rec_area_id] = provider._api_request(
+        _booking_categories_cache[rec_area_id] = client.request_json(
             rec_area_id, "BOOKING_CATEGORIES"
         )
     for cat in _booking_categories_cache[rec_area_id]:
@@ -142,17 +94,17 @@ def _booking_category(provider, rec_area_id, booking_category_id=0):
     return None
 
 
-def _people_capacity_counts(provider, rec_area_id, booking_category_id=0, party_size=1):
-    cat = _booking_category(provider, rec_area_id, booking_category_id)
+def _people_capacity_counts(client, rec_area_id, booking_category_id=0, party_size=1):
+    cat = _booking_category(client, rec_area_id, booking_category_id)
     cap_id = (cat or {}).get("capacityCategoryId")
     if cap_id is None:
         return []
     return [{"capacityCategoryId": cap_id, "count": party_size}]
 
 
-def _default_sub_equipment(provider, rec_area_id):
+def _default_sub_equipment(client, rec_area_id):
     if rec_area_id not in _sub_equipment_cache:
-        cats = provider._api_request(rec_area_id, "LIST_EQUIPMENT")
+        cats = client.request_json(rec_area_id, "LIST_EQUIPMENT")
         non_group = next(
             (c for c in cats if c.get("equipmentCategoryId") == NON_GROUP_EQUIPMENT),
             None,
@@ -166,16 +118,12 @@ def _default_sub_equipment(provider, rec_area_id):
     return _sub_equipment_cache[rec_area_id]
 
 
-def _bookable_resource_ids(provider, rec_area_id, fid, start, end):
-    """Return the set of resourceIds that /api/occupancy says are web-bookable.
-
-    Returns None if occupancy is unavailable (then we fall back to MAPDATA-only,
-    logging so we know the result is unverified).
-    """
+def _bookable_resource_ids(client, rec_area_id, fid, start, end):
+    """Return resourceIds that the authoritative occupancy API says are bookable."""
     occ_filter = {
         "bookingCategoryId": 0,
         "equipmentCategoryId": NON_GROUP_EQUIPMENT,
-        "subEquipmentCategoryId": _default_sub_equipment(provider, rec_area_id) or "",
+        "subEquipmentCategoryId": _default_sub_equipment(client, rec_area_id) or "",
         "startDate": start.isoformat(),
         "endDate": end.isoformat(),
         "filterData": "[]",
@@ -183,7 +131,7 @@ def _bookable_resource_ids(provider, rec_area_id, fid, start, end):
         "boatDraft": 0,
         "boatWidth": 0,
         "peopleCapacityCategoryCounts": json.dumps(
-            _people_capacity_counts(provider, rec_area_id)
+            _people_capacity_counts(client, rec_area_id)
         ),
         "numEquipment": 1,
         "resourceLocationId": fid,
@@ -192,15 +140,17 @@ def _bookable_resource_ids(provider, rec_area_id, fid, start, end):
         "bookingUid": "",
         "groupHoldUid": "",
     }
-    occ = provider._api_request(rec_area_id, "OCCUPANCY", occ_filter)
+    occ = client.request_json(rec_area_id, "OCCUPANCY", occ_filter)
+    if not isinstance(occ, dict) or not isinstance(occ.get("resourceOccupancy"), list):
+        raise AvailabilityVerificationError("occupancy returned invalid data")
     return {
         str(ro["resourceId"])
-        for ro in (occ.get("resourceOccupancy") or [])
+        for ro in occ["resourceOccupancy"]
         if ro.get("availability") == _GTC_OCCUPANCY_AVAILABLE
     }
 
 
-def _gtc_mapdata(provider, rec_area_id, map_id, fid, start, end):
+def _gtc_mapdata(client, rec_area_id, map_id, fid, start, end):
     search_filter = {
         "mapId": map_id,
         "resourceLocationId": fid,
@@ -214,20 +164,25 @@ def _gtc_mapdata(provider, rec_area_id, map_id, fid, start, end):
         "equipmentCategoryId": NON_GROUP_EQUIPMENT,
         "filterData": [],
     }
-    return provider._api_request(rec_area_id, "MAPDATA", search_filter)
+    result = client.request_json(rec_area_id, "MAPDATA", search_filter)
+    if (
+        not isinstance(result, dict)
+        or not isinstance(result.get("resourceAvailabilities"), dict)
+        or not isinstance(result.get("mapLinkAvailabilities"), dict)
+    ):
+        raise HttpRequestError("GoingToCamp MAPDATA returned invalid data")
+    return result
 
 
-def gtc_available_nights(rec_area_id, fid, start, end, root_map_id=None):
+def gtc_available_nights(rec_area_id, fid, start, end, root_map_id=None, client=None):
     """Return {resource_label: set(date)} of open nights for a WA park facility.
 
-    Bypasses camply's broken get_site_details(); uses MAPDATA directly.
-    root_map_id may be supplied (from config) to skip the per-area index lookup.
+    Uses MAPDATA directly. root_map_id may be supplied from config to skip the
+    per-area index lookup.
     """
-    import datetime as _dt
-
-    provider = _gtc.GoingToCamp()
+    client = client or GoingToCampClient()
     if root_map_id is None:
-        idx = _rootmap_index(provider, rec_area_id)
+        idx = _rootmap_index(client, rec_area_id)
         root_map_id = idx.get(fid)
     if root_map_id is None:
         raise ValueError(f"no rootMapId for facility {fid}")
@@ -239,16 +194,18 @@ def gtc_available_nights(rec_area_id, fid, start, end, root_map_id=None):
     # walk-in / host / non-web-bookable sites as 0. We treat these as candidates
     # only and confirm each one via /api/occupancy below.
     cand: dict[str, set] = {}  # resourceId(str) -> set(open dates)
-    root = _gtc_mapdata(provider, rec_area_id, root_map_id, fid, start, end)
+    root = _gtc_mapdata(client, rec_area_id, root_map_id, fid, start, end)
     child_map_ids = list((root.get("mapLinkAvailabilities") or {}).keys())
+    if len(child_map_ids) > 1000:
+        raise HttpRequestError("GoingToCamp returned too many child maps")
     maps_to_scan = [root_map_id] + [int(c) for c in child_map_ids]
     for mid in maps_to_scan:
         res = root if mid == root_map_id else _gtc_mapdata(
-            provider, rec_area_id, mid, fid, start, end
+            client, rec_area_id, mid, fid, start, end
         )
         for rid, slots in (res.get("resourceAvailabilities") or {}).items():
             open_dates = {
-                start + _dt.timedelta(days=i)
+                start + dt.timedelta(days=i)
                 for i, slot in enumerate(slots[:n_days])
                 if slot.get("availability") == _GTC_AVAILABLE
             }
@@ -263,18 +220,19 @@ def gtc_available_nights(rec_area_id, fid, start, end, root_map_id=None):
     # nothing). So for each candidate site's consecutive run (>= MIN_NIGHTS), do
     # one short-window occupancy call and keep the run only if the site is in the
     # bookable set for that exact window. Results cached per window to dedupe.
-    occ_cache: dict[tuple, set] = {}
+    occ_cache: dict[tuple, set[str]] = {}
 
     def occ_set(w_start, w_end):
         ck = (w_start, w_end)
         if ck not in occ_cache:
             try:
                 occ_cache[ck] = _bookable_resource_ids(
-                    provider, rec_area_id, fid, w_start, w_end
+                    client, rec_area_id, fid, w_start, w_end
                 )
-            except Exception as e:  # noqa: BLE001
-                log(f"  WARN occupancy check failed for facility {fid}: {e}")
-                occ_cache[ck] = None  # None = could not verify
+            except Exception as exc:  # noqa: BLE001
+                raise AvailabilityVerificationError(
+                    f"occupancy verification failed ({type(exc).__name__})"
+                ) from exc
         return occ_cache[ck]
 
     by_site: dict[str, set] = {}
@@ -283,28 +241,26 @@ def gtc_available_nights(rec_area_id, fid, start, end, root_map_id=None):
         for run_start, length in consecutive_runs(dates):
             if length < MIN_NIGHTS:
                 continue
-            w_end = run_start + _dt.timedelta(days=length)
+            w_end = run_start + dt.timedelta(days=length)
             ok = occ_set(run_start, w_end)
-            # ok is None => occupancy unavailable; fall back to MAPDATA (keep).
-            if ok is None or rid in ok:
+            if rid in ok:
                 for i in range(length):
-                    verified.add(run_start + _dt.timedelta(days=i))
+                    verified.add(run_start + dt.timedelta(days=i))
         if verified:
-            label = f"{abs(int(rid)) % 100000}"
-            by_site.setdefault(label, set()).update(verified)
+            by_site.setdefault(str(rid), set()).update(verified)
     return by_site
 # ---------------------------------------------------------------------------
-
-from camply.containers import SearchWindow  # noqa: E402
-from camply.search import SearchRecreationDotGov  # noqa: E402
 
 HERE = Path(__file__).parent
 CANDIDATES = HERE / "candidates.json"
 CONFIG = HERE / "watch_config.json"
 STATE_FILE = HERE / "last_state.json"
+COMPLETE_STATE_FILE = HERE / "last_complete_state.json"
+SCAN_PROGRESS = HERE / "scan_progress.json"
 ALERTS = HERE / "alerts.jsonl"
-LOG = HERE / "watch.log"
 SENT_PINGS = HERE / "sent_pings.json"  # ledger of trigger event-ids already sent
+TARGETS_FILE = HERE / "watch_targets.json"  # private, gitignored trip dates
+SCHEDULE_STATE = HERE / "schedule_state.json"
 # Suppress re-sending the same opening (same event-id) within this many hours.
 # WA park availability flaps (a site appears/disappears across runs), which would
 # otherwise re-notify the same opening every cycle. This avoids wasted sends.
@@ -328,27 +284,94 @@ WEBHOOK_TEXT_KEY = os.environ.get("CAMPWATCH_WEBHOOK_TEXT_KEY", "content")
 
 GROUP_MARKERS = ("GROUP", "GRP", "HORSE CAMP", "GROUP SITE", "GROUP CAMP", "OVERFLOW")
 
-# ---- target weekends filter ----
-# Only alert for runs that cover one of these specific weekends. Each weekend is
-# defined by the set of *nights* (a night is identified by its check-in date)
-# that a stay must include to count. A standard Fri->Sun weekend booking is the
-# Friday night + the Saturday night (check in Fri, check out Sun = 2 nights).
-# A run [start, start+nights) qualifies if it contains ALL required nights of
-# any single target weekend.
-# Set TARGET_WEEKENDS = None to disable the filter (alert on everything again).
-# All target weekends booked as of 2026-06-24 -> nothing left to watch.
-# The watcher still runs (timer stays active) but with an empty target list it
-# matches nothing and stays silent. Add weekends back here to resume alerts.
-#   Jul 10-12    -> Manchester Site 43    (res IWWA26-5638176B1)
-#   Jul 17-19    -> Twin Harbors Site 31  (res IWWA26-5638263B1, Thu Jul 16-Sun Jul 19)
-#   Jul 31-Aug 2 -> Jarrell Cove Site 21  (res IWWA26-5637427B1)
-TARGET_WEEKENDS: list = [
-    # (label, [required night check-in dates])  Fri + Sat nights of a Fri->Sun stay.
-    # PAUSED 2026-06-25: Aug 7-9 has abundant single-site inventory (Dash Point,
-    # Camano, Penrose, Joemma, Fort Ebey, Illahee all open). Muted per-site pings
-    # while Bas decides between Dash Point vs Camano. Re-add the line below to resume:
-    #   ("Aug 7-9", [dt.date(2026, 8, 7), dt.date(2026, 8, 8)]),
-]
+# ---- private target-weekend filter ------------------------------------------
+# watch_targets.json is intentionally ignored by Git so future travel dates do
+# not end up in source control.  An empty/missing file pauses all network polls.
+def load_target_weekends(path: Path = TARGETS_FILE):
+    if not path.exists():
+        return []
+    if path.is_symlink():
+        raise ValueError("watch_targets.json must not be a symlink")
+    os.chmod(path, 0o600)
+    raw = json.loads(path.read_text())
+    if raw.get("watch_all") is True:
+        return None
+    weekends = []
+    for item in raw.get("weekends", []):
+        label = str(item["label"]).strip()
+        nights = [dt.date.fromisoformat(value) for value in item["nights"]]
+        if not label or not nights:
+            raise ValueError("each target weekend needs a label and at least one night")
+        weekends.append((label, nights))
+    return weekends
+
+
+TARGET_WEEKENDS = load_target_weekends()
+
+
+def recommended_poll_minutes(today: dt.date | None = None):
+    """Adaptive interval: near trips get fast polls; no targets means paused."""
+    today = today or dt.date.today()
+    if TARGET_WEEKENDS is None:
+        return 15
+    future_nights = [
+        night
+        for _, required in TARGET_WEEKENDS
+        for night in required
+        if night >= today
+    ]
+    if not future_nights:
+        return None
+    days = (min(future_nights) - today).days
+    if days <= 7:
+        return 10
+    if days <= 30:
+        return 30
+    return 60
+
+
+def targets_in_watch_window(today: dt.date | None = None) -> bool:
+    today = today or dt.date.today()
+    if TARGET_WEEKENDS is None:
+        return True
+    end = today + dt.timedelta(days=WINDOW_DAYS)
+    return any(
+        required and all(today <= night < end for night in required)
+        for _, required in TARGET_WEEKENDS
+    )
+
+
+def _target_fingerprint() -> str:
+    content = TARGETS_FILE.read_bytes() if TARGETS_FILE.exists() else b"missing"
+    return hashlib.sha256(content).hexdigest()[:16]
+
+
+def scheduled_poll_due(now: dt.datetime | None = None) -> bool:
+    now = now or dt.datetime.now().astimezone()
+    if not SCHEDULE_STATE.exists():
+        return True
+    try:
+        state = json.loads(SCHEDULE_STATE.read_text())
+        if state.get("target_fingerprint") != _target_fingerprint():
+            return True
+        return now >= dt.datetime.fromisoformat(state["next_poll_at"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return True
+
+
+def record_next_poll(minutes: int, now: dt.datetime | None = None) -> None:
+    now = now or dt.datetime.now().astimezone()
+    atomic_write_json(
+        SCHEDULE_STATE,
+        {
+            "last_success_at": now.isoformat(timespec="seconds"),
+            "next_poll_at": (now + dt.timedelta(minutes=minutes)).isoformat(
+                timespec="seconds"
+            ),
+            "interval_minutes": minutes,
+            "target_fingerprint": _target_fingerprint(),
+        },
+    )
 
 
 def covers_target_weekend(run_start: "dt.date", nights: int):
@@ -375,10 +398,122 @@ WA_PARKS_FILE = Path(__file__).parent / "wa_parks.json"
 
 def log(msg: str):
     ts = dt.datetime.now().isoformat(timespec="seconds")
-    line = f"[{ts}] {msg}"
-    print(line)
-    with LOG.open("a") as f:
-        f.write(line + "\n")
+    print(f"[{ts}] {msg}", flush=True)
+
+
+def secure_append_jsonl(path: Path, values: list[dict]) -> None:
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "a") as handle:
+        for value in values:
+            handle.write(json.dumps(value) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _write_state_checkpoint(
+    previous: dict, current: dict, *, complete: bool = False
+) -> None:
+    """Persist completed targets without discarding unprocessed prior results."""
+    snapshot = dict(current) if complete else {**previous, **current}
+    atomic_write_json(STATE_FILE, snapshot)
+
+
+def _load_complete_state() -> dict:
+    """Load the stable alert baseline, migrating an older final state once."""
+    if COMPLETE_STATE_FILE.exists():
+        return json.loads(COMPLETE_STATE_FILE.read_text())
+    previous = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+    atomic_write_json(COMPLETE_STATE_FILE, previous)
+    return previous
+
+
+def _write_scan_progress(
+    *,
+    status: str,
+    started_at: str,
+    completed: int,
+    total: int,
+    signature: str,
+    completed_keys: list[str],
+    last_target: str | None = None,
+) -> None:
+    now = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+    progress = {
+        "status": status,
+        "started_at": started_at,
+        "updated_at": now,
+        "completed": completed,
+        "total": total,
+        "signature": signature,
+        "completed_keys": completed_keys,
+        "pid": os.getpid(),
+    }
+    if last_target is not None:
+        progress["last_target"] = last_target
+    if status in {"complete", "failed"}:
+        progress["finished_at"] = now
+    atomic_write_json(SCAN_PROGRESS, progress)
+
+
+def _scan_signature(cfg: dict, start: dt.date, end: dt.date) -> str:
+    if TARGET_WEEKENDS is None:
+        target_filter = "all"
+    else:
+        target_filter = [
+            [label, [night.isoformat() for night in nights]]
+            for label, nights in TARGET_WEEKENDS
+        ]
+    payload = {
+        "config": cfg,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "target_filter": target_filter,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _pid_is_alive(pid) -> bool:
+    try:
+        pid = int(pid)
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _load_resume_checkpoint(signature: str) -> tuple[list[str], dict]:
+    """Return completed keys and their saved state for a compatible partial scan."""
+    if not SCAN_PROGRESS.exists() or not STATE_FILE.exists():
+        return [], {}
+    try:
+        progress = json.loads(SCAN_PROGRESS.read_text())
+        if (
+            progress.get("status") not in {"running", "failed"}
+            or progress.get("signature") != signature
+        ):
+            return [], {}
+        pid = progress.get("pid")
+        if (
+            progress.get("status") == "running"
+            and pid != os.getpid()
+            and _pid_is_alive(pid)
+        ):
+            raise RuntimeError("an identical availability scan is already running")
+        snapshot = json.loads(STATE_FILE.read_text())
+        keys = progress.get("completed_keys")
+        if not isinstance(snapshot, dict) or not isinstance(keys, list):
+            return [], {}
+        completed = [str(key) for key in keys if str(key) in snapshot]
+        return completed, {key: snapshot[key] for key in completed}
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return [], {}
 
 
 def _load_sent_pings() -> dict:
@@ -403,7 +538,7 @@ def _record_sent_ping(ledger: dict, event_id: str):
         if dt.datetime.fromisoformat(v) >= cutoff
     }
     try:
-        SENT_PINGS.write_text(json.dumps(pruned, indent=2))
+        atomic_write_json(SENT_PINGS, pruned)
     except Exception:  # noqa: BLE001
         pass
 
@@ -418,6 +553,50 @@ def _recently_sent(ledger: dict, event_id: str) -> bool:
     except Exception:  # noqa: BLE001
         return False
     return (dt.datetime.now() - when) < dt.timedelta(hours=PING_SUPPRESS_HOURS)
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "redirects disabled", headers, fp)
+
+
+def validate_webhook_url(url: str) -> str:
+    """Require HTTPS and reject local/private destinations to prevent SSRF."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("webhook must use an absolute HTTPS URL")
+    if parsed.username or parsed.password:
+        raise ValueError("webhook URL must not contain user-info credentials")
+    allow_private = os.environ.get("CAMPWATCH_ALLOW_PRIVATE_WEBHOOK", "0") == "1"
+    if not allow_private:
+        try:
+            addresses = socket.getaddrinfo(
+                parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM
+            )
+        except socket.gaierror as exc:
+            raise ValueError("webhook hostname could not be resolved") from exc
+        for address in {item[4][0] for item in addresses}:
+            if not ipaddress.ip_address(address).is_global:
+                raise ValueError("webhook resolves to a non-public address")
+    return url
+
+
+def _post_webhook(url: str, payload: dict) -> int:
+    validated = validate_webhook_url(url)
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        validated,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(len(body)),
+        },
+        method="POST",
+    )
+    opener = urllib.request.build_opener(_NoRedirects())
+    with opener.open(req, timeout=30) as response:
+        response.read(1)
+        return getattr(response, "status", 200)
 
 
 def send_trigger(name: str, url: str, new_runs: list[str], runs: list[dict]) -> bool:
@@ -482,19 +661,13 @@ def send_trigger(name: str, url: str, new_runs: list[str], runs: list[dict]) -> 
         "event_id": event_id,
     }
     try:
-        req = urllib.request.Request(
-            WEBHOOK_URL,
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
-            if resp.status >= 300:
-                log(f"  WARN webhook rc={resp.status} for {name}")
-                return False
-    except Exception as e:  # noqa: BLE001
-        emsg = str(e).replace("\n", " ")[:200]
-        log(f"  WARN webhook send failed for {name}: {emsg}")
+        status = _post_webhook(WEBHOOK_URL, payload)
+        if status >= 300:
+            log(f"  WARN webhook rc={status} for {name}")
+            return False
+    except Exception as exc:  # noqa: BLE001
+        # Never log the URL: webhook paths often contain bearer-like secrets.
+        log(f"  WARN webhook send failed for {name}: {type(exc).__name__}")
         return False
     _record_sent_ping(ledger, event_id)
     log(f"  -> notification sent for {name} (event-id {event_id})")
@@ -506,14 +679,16 @@ GTC_EQUIPMENT_ID = -32768  # NON_GROUP_EQUIPMENT
 GTC_DOMAIN = "washington.goingtocamp.com"
 
 
-def gtc_booking_url(map_id, facility_id, start: str, nights: int) -> str:
+def gtc_booking_url(
+    map_id, facility_id, start: str, nights: int, domain: str = GTC_DOMAIN
+) -> str:
     """Build a WA GoingToCamp deep link that opens the park's results page
-    pre-filled with the stay dates (same format camply's get_reservation_link
-    produces). `start` is an ISO date string; end = start + nights."""
+    pre-filled with the stay dates. `start` is an ISO date string; end = start
+    plus nights."""
     s = dt.date.fromisoformat(start)
     e = s + dt.timedelta(days=nights)
     return (
-        f"https://{GTC_DOMAIN}/create-booking/results?mapId={map_id}"
+        f"https://{domain}/create-booking/results?mapId={map_id}"
         f"&bookingCategoryId=0"
         f"&startDate={s.isoformat()}"
         f"&endDate={e.isoformat()}"
@@ -541,13 +716,14 @@ def build_config():
     cfg = {"recdotgov": [], "going_to_camp": []}
     if CANDIDATES.exists():
         for c in json.loads(CANDIDATES.read_text()):
-            if is_group(c.get("name", "")):
+            if c.get("reservable") is False or is_group(c.get("name", "")):
                 continue
             cfg["recdotgov"].append(
                 {
                     "id": int(c["id"]),
                     "name": c["name"],
                     "rating": c.get("rating"),
+                    "distance_km": c.get("distance_km"),
                     "dist_mi": c.get("dist_mi"),
                 }
             )
@@ -562,7 +738,7 @@ def build_config():
                     "root_map_id": p.get("root_map_id"),
                 }
             )
-    CONFIG.write_text(json.dumps(cfg, indent=2))
+    atomic_write_json(CONFIG, cfg)
     return cfg
 
 
@@ -582,39 +758,184 @@ def consecutive_runs(dates):
     return runs
 
 
-def collect(search):
-    """Run a camply search, return {site_name: set(dates)} of Available nights,
-    excluding group/overflow site types."""
+def _month_starts(start: dt.date, end: dt.date):
+    month = start.replace(day=1)
+    while month < end:
+        yield month
+        month = (month.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+
+
+def _safe_site_label(value, campsite_id) -> str:
+    label = str(value or campsite_id or "site")
+    label = "".join(ch if ch.isprintable() else "?" for ch in label)
+    return f"{label.replace('|', '/')} (#{campsite_id})"
+
+
+def recgov_available_nights(client, campground_id, start, end):
+    """Return only explicitly Available recreation.gov nights, by unique site."""
     by_site: dict[str, set] = {}
-    matches = search.get_matching_campsites(log=False, verbose=False)
-    for m in matches:
-        stype = (m.campsite_type or "").upper()
-        sname = m.campsite_site_name or "site"
-        if is_group(sname, stype):
-            continue
-        d = m.booking_date
-        if isinstance(d, dt.datetime):
-            d = d.date()
-        by_site.setdefault(sname, set()).add(d)
+    for month in _month_starts(start, end):
+        data = client.month(campground_id, month)
+        for campsite_id, site in data["campsites"].items():
+            site_name = site.get("site") or campsite_id
+            site_type = site.get("campsite_type") or ""
+            if is_group(str(site_name), str(site_type)):
+                continue
+            label = _safe_site_label(site_name, campsite_id)
+            for date_text, status in (site.get("availabilities") or {}).items():
+                if status != "Available":
+                    continue
+                day = dt.date.fromisoformat(date_text[:10])
+                if start <= day < end:
+                    by_site.setdefault(label, set()).add(day)
     return by_site
 
 
-def main():
+def _summary_from_state(cfg: dict, state: dict, previous: dict):
+    """Rebuild human/alert details so resumed targets need not be polled again."""
+    summary = []
+    new_alerts = []
+
+    def add_entry(key, name, rating, dist_mi, url, link_fn=None):
+        run_keys = state.get(key, [])
+        if not run_keys:
+            return
+        runs = []
+        for run_key in run_keys:
+            site, start_text, nights_text = run_key.rsplit("|", 2)
+            nights = int(nights_text)
+            weekend = covers_target_weekend(dt.date.fromisoformat(start_text), nights)
+            run = {
+                "site": site,
+                "start": start_text,
+                "nights": nights,
+                "weekend": weekend,
+            }
+            if link_fn is not None:
+                try:
+                    run["booking_url"] = link_fn(site, start_text, nights)
+                except Exception:  # noqa: BLE001
+                    run["booking_url"] = url
+            runs.append(run)
+        runs.sort(key=lambda run: (run["start"], run["site"]))
+        entry = {
+            "key": key,
+            "name": name,
+            "rating": rating,
+            "dist_mi": dist_mi,
+            "runs": runs,
+            "url": url,
+        }
+        summary.append(entry)
+        old_keys = set(previous.get(key, []))
+        fresh = sorted(run_key for run_key in run_keys if run_key not in old_keys)
+        if fresh:
+            alert = dict(entry)
+            alert["new_runs"] = fresh
+            alert["detected_at"] = dt.datetime.now().isoformat(timespec="seconds")
+            new_alerts.append(alert)
+
+    for campground in cfg["recdotgov"]:
+        campground_id = campground["id"]
+        add_entry(
+            f"rg:{campground_id}",
+            campground["name"],
+            campground.get("rating"),
+            campground.get("dist_mi"),
+            f"https://www.recreation.gov/camping/campgrounds/{campground_id}",
+            link_fn=lambda site, start_text, nights, _id=campground_id: recgov_booking_url(
+                _id, start_text, nights
+            ),
+        )
+    for campground in cfg["going_to_camp"]:
+        facility_id = campground["id"]
+        domain = GTC_HOSTS[int(campground["rec_area"])]
+        map_id = campground.get("root_map_id")
+        add_entry(
+            f"wa:{facility_id}",
+            campground["name"] + " (WA State Park)",
+            None,
+            None,
+            f"https://{domain}",
+            link_fn=lambda site, start_text, nights, _map=map_id, _facility=facility_id, _domain=domain: gtc_booking_url(
+                _map, _facility, start_text, nights, domain=_domain
+            ),
+        )
+    return summary, new_alerts
+
+
+def main(*, scheduled: bool = False):
+    if scheduled and not scheduled_poll_due():
+        return 0
+    interval = recommended_poll_minutes()
+    if interval is None:
+        log("Polling paused: add a future trip to private watch_targets.json.")
+        if scheduled:
+            record_next_poll(24 * 60)
+        return 0
+    if not targets_in_watch_window():
+        log(f"Polling deferred: no complete target trip is within {WINDOW_DAYS} days.")
+        if scheduled:
+            record_next_poll(24 * 60)
+        return 0
+
     cfg = json.loads(CONFIG.read_text()) if CONFIG.exists() else build_config()
     start = dt.date.today()
     end = start + dt.timedelta(days=WINDOW_DAYS)
-    sw = SearchWindow(start_date=start, end_date=end)
     log(
         f"Watching {len(cfg['recdotgov'])} rec.gov + "
         f"{len(cfg['going_to_camp'])} WA-State-Park campgrounds; "
-        f"window {start}..{end}, min {MIN_NIGHTS} nights"
+        f"window {start}..{end}, min {MIN_NIGHTS} nights; cadence {interval}m"
     )
 
-    prev_state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
-    new_state, summary, new_alerts = {}, [], []
+    # Preserve the last fully completed result as the alert baseline. Incremental
+    # checkpoints update STATE_FILE only, so an interrupted scan cannot consume
+    # openings that still need to be alerted on the next complete run.
+    prev_state = _load_complete_state()
+    rec_client = RecreationGovClient()
+    gtc_client = GoingToCampClient()
+    total_targets = len(cfg["recdotgov"]) + len(cfg["going_to_camp"])
+    signature = _scan_signature(cfg, start, end)
+    completed_keys, new_state = _load_resume_checkpoint(signature)
+    completed_key_set = set(completed_keys)
+    completed_targets = len(completed_keys)
+    started_at = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+    last_target = None
+    if completed_targets:
+        log(
+            f"Resuming compatible checkpoint: skipping "
+            f"{completed_targets}/{total_targets} completed campgrounds."
+        )
+    _write_scan_progress(
+        status="running",
+        started_at=started_at,
+        completed=completed_targets,
+        total=total_targets,
+        signature=signature,
+        completed_keys=completed_keys,
+    )
 
-    def process(key, name, rating, dist_mi, by_site, url, link_fn=None):
-        runs = []
+    def checkpoint(key: str, name: str):
+        nonlocal completed_targets, last_target
+        if key not in completed_key_set:
+            completed_keys.append(key)
+            completed_key_set.add(key)
+            completed_targets += 1
+        last_target = name
+        _write_state_checkpoint(prev_state, new_state)
+        _write_scan_progress(
+            status="running",
+            started_at=started_at,
+            completed=completed_targets,
+            total=total_targets,
+            signature=signature,
+            completed_keys=completed_keys,
+            last_target=name,
+        )
+        log(f"  [{completed_targets}/{total_targets}] checked {name}")
+
+    def process(key, by_site):
+        run_keys = []
         for sname, ds in by_site.items():
             for rs, length in consecutive_runs(ds):
                 if length < MIN_NIGHTS:
@@ -622,100 +943,79 @@ def main():
                 wk = covers_target_weekend(rs, length)
                 if wk is None:
                     continue
-                run = {
-                    "site": sname,
-                    "start": rs.isoformat(),
-                    "nights": length,
-                    "weekend": wk,
-                }
-                if link_fn is not None:
-                    try:
-                        run["booking_url"] = link_fn(sname, rs.isoformat(), length)
-                    except Exception:  # noqa: BLE001
-                        run["booking_url"] = url
-                runs.append(run)
-        if not runs:
-            new_state[key] = []
-            return
-        runs.sort(key=lambda r: (r["start"], r["site"]))
-        run_keys = sorted(f"{r['site']}|{r['start']}|{r['nights']}" for r in runs)
-        new_state[key] = run_keys
-        fresh = [k for k in run_keys if k not in set(prev_state.get(key, []))]
-        entry = {
-            "key": key, "name": name, "rating": rating, "dist_mi": dist_mi,
-            "runs": runs, "url": url,
-        }
-        summary.append(entry)
-        if fresh:
-            a = dict(entry)
-            a["new_runs"] = fresh
-            a["detected_at"] = dt.datetime.now().isoformat(timespec="seconds")
-            new_alerts.append(a)
+                run_keys.append(f"{sname}|{rs.isoformat()}|{length}")
+        new_state[key] = sorted(run_keys)
 
-    # --- recreation.gov ---
-    for cg in cfg["recdotgov"]:
-        cid = cg["id"]
-        try:
-            s = SearchRecreationDotGov(
-                search_window=sw, campgrounds=[cid], verbose=False
-            )
-            by_site = collect(s)
-        except IndexError:
-            # Non-reservable / facility-only duplicate IDs (no availability map).
-            # Harmless; skip quietly so logs stay clean.
-            new_state[f"rg:{cid}"] = prev_state.get(f"rg:{cid}", [])
-            continue
-        except Exception as e:  # noqa: BLE001
-            log(f"  WARN rec.gov #{cid} {cg['name']}: {e}")
-            new_state[f"rg:{cid}"] = prev_state.get(f"rg:{cid}", [])
-            continue
-        process(
-            f"rg:{cid}", cg["name"], cg.get("rating"), cg.get("dist_mi"), by_site,
-            f"https://www.recreation.gov/camping/campgrounds/{cid}",
-            link_fn=lambda site, start, nights, _cid=cid: recgov_booking_url(
-                _cid, start, nights
-            ),
+    try:
+        # --- recreation.gov ---
+        for cg in cfg["recdotgov"]:
+            cid = cg["id"]
+            key = f"rg:{cid}"
+            if key in completed_key_set:
+                continue
+            try:
+                by_site = recgov_available_nights(rec_client, cid, start, end)
+            except Exception as exc:  # noqa: BLE001
+                log(f"  WARN rec.gov #{cid} {cg['name']}: {type(exc).__name__}")
+                new_state[key] = prev_state.get(key, [])
+            else:
+                process(key, by_site)
+            checkpoint(key, cg["name"])
+
+        # --- Washington State Parks (GoingToCamp, direct MAPDATA) ---
+        for cg in cfg["going_to_camp"]:
+            fid = cg["id"]
+            key = f"wa:{fid}"
+            if key in completed_key_set:
+                continue
+            if cg.get("root_map_id") is None:
+                # Non-campground facility (no reservable map); nothing to watch.
+                new_state[key] = prev_state.get(key, [])
+            else:
+                try:
+                    by_site = gtc_available_nights(
+                        cg["rec_area"], fid, start, end,
+                        root_map_id=cg.get("root_map_id"), client=gtc_client,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log(f"  WARN WA park {cg['name']} ({fid}): {type(exc).__name__}")
+                    new_state[key] = prev_state.get(key, [])
+                else:
+                    process(key, by_site)
+            checkpoint(key, cg["name"])
+    except BaseException:
+        _write_scan_progress(
+            status="failed",
+            started_at=started_at,
+            completed=completed_targets,
+            total=total_targets,
+            signature=signature,
+            completed_keys=completed_keys,
+            last_target=last_target,
         )
+        raise
 
-    # --- Washington State Parks (GoingToCamp, direct MAPDATA) ---
-    for cg in cfg["going_to_camp"]:
-        fid = cg["id"]
-        if cg.get("root_map_id") is None:
-            # Non-campground facility (no reservable map); nothing to watch.
-            new_state[f"wa:{fid}"] = prev_state.get(f"wa:{fid}", [])
-            continue
-        try:
-            by_site = gtc_available_nights(
-                cg["rec_area"], fid, start, end, root_map_id=cg.get("root_map_id")
-            )
-        except Exception as e:  # noqa: BLE001
-            # Cap the error text: GoingToCamp's Azure WAF returns multi-KB HTML
-            # error pages on intermittent 403s, which would flood the log.
-            emsg = str(e).replace("\n", " ")[:160]
-            log(f"  WARN WA park {cg['name']} ({fid}): {emsg}")
-            new_state[f"wa:{fid}"] = prev_state.get(f"wa:{fid}", [])
-            continue
-        _map_id = cg.get("root_map_id")
-        process(
-            f"wa:{fid}", cg["name"] + " (WA State Park)", None, None, by_site,
-            "https://washington.goingtocamp.com",
-            link_fn=lambda site, start, nights, _m=_map_id, _f=fid: gtc_booking_url(
-                _m, _f, start, nights
-            ),
-        )
-
-    STATE_FILE.write_text(json.dumps(new_state, indent=2))
+    _write_state_checkpoint(prev_state, new_state, complete=True)
+    summary, new_alerts = _summary_from_state(cfg, new_state, prev_state)
     if new_alerts:
-        with ALERTS.open("a") as f:
-            for a in new_alerts:
-                f.write(json.dumps(a) + "\n")
+        secure_append_jsonl(ALERTS, new_alerts)
         log(f"!! {len(new_alerts)} campground(s) with NEW availability -> alerts.jsonl")
-        # Instant Matrix ping per campground with new openings. Change-only:
+        # Instant webhook per campground with new openings. Change-only:
         # this branch runs ONLY when there is genuinely new availability.
         for a in new_alerts:
             send_trigger(a["name"], a["url"], a["new_runs"], a["runs"])
     else:
         log("No new availability since last check.")
+    atomic_write_json(COMPLETE_STATE_FILE, new_state)
+    _write_scan_progress(
+        status="complete",
+        started_at=started_at,
+        completed=completed_targets,
+        total=total_targets,
+        signature=signature,
+        completed_keys=completed_keys,
+        last_target=last_target,
+    )
 
     # Human summary (manual run)
     print("\n=== CURRENT QUALIFYING AVAILABILITY ===")
@@ -732,12 +1032,28 @@ def main():
                 print(f"        {r['booking_url']}")
         if len(e["runs"]) > 6:
             print(f"     ... +{len(e['runs']) - 6} more runs")
+    if scheduled:
+        record_next_poll(interval)
     return 0
 
 
 if __name__ == "__main__":
     try:
-        sys.exit(main())
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument(
+            "--scheduled",
+            action="store_true",
+            help="honor adaptive cadence and update schedule_state.json",
+        )
+        parser.add_argument(
+            "--all-once",
+            action="store_true",
+            help="scan all qualifying openings once without changing private targets",
+        )
+        args = parser.parse_args()
+        if args.all_once:
+            TARGET_WEEKENDS = None
+        sys.exit(main(scheduled=args.scheduled))
     except Exception:
         traceback.print_exc()
         sys.exit(1)

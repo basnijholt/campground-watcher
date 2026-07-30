@@ -1,273 +1,735 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.10"
-# dependencies = ["camply", "pytest"]
-# ///
-"""Tests for the campground watcher.
-
-Two groups:
-  1. Pure-logic filter helpers (offline, deterministic):
-       is_group, consecutive_runs
-  2. Washington State Parks availability path (gtc_available_nights):
-       - an offline test that mocks the GoingToCamp provider's _api_request to
-         prove the MAPDATA traversal parses daily slots into night-runs WITHOUT
-         ever calling the broken /api/resource/details endpoint and WITHOUT a 400.
-       - an optional LIVE test (skipped unless CAMPLY_LIVE=1) that hits the real
-         GoingToCamp API for one park and asserts no 400/404.
-
-Run:  uv run --python 3.12 -m pytest test_watch.py -v
-  or: uv run --python 3.12 test_watch.py
-"""
+#!/usr/bin/env python3
+"""Offline tests for the dependency-free campground watcher."""
 from __future__ import annotations
 
 import datetime as dt
-import importlib.util
-import os
-import sys
+import json
+import tempfile
+import unittest
+import urllib.error
+from email.message import Message
 from pathlib import Path
+from unittest import mock
 
-import pytest
-
-HERE = Path(__file__).parent
-
-
-def _load_watch():
-    """Import watch.py as a module (applies its camply monkeypatch)."""
-    spec = importlib.util.spec_from_file_location("watchmod", HERE / "watch.py")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["watchmod"] = mod
-    spec.loader.exec_module(mod)
-    return mod
+import campwatch_http
+import campwatch_config
+import build_candidates
+import availability_map
+import run_watch
+import watch
 
 
-watch = _load_watch()
+class FakeHttpResponse:
+    def __init__(self, body=b"{}", *, status=200, headers=None):
+        self.body = body
+        self.status = status
+        self.headers = headers or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self, limit):
+        return self.body[:limit]
 
 
-# --------------------------------------------------------------------------- #
-# 1. Filter helpers
-# --------------------------------------------------------------------------- #
-def test_is_group():
-    assert watch.is_group("Group Site A")
-    assert watch.is_group("Equestrian", "HORSE CAMP")
-    assert watch.is_group("Overflow Lot")
-    assert not watch.is_group("Site 042")
-    assert not watch.is_group("Lakeview", "STANDARD NONELECTRIC")
-
-
-def test_consecutive_runs():
-    d = dt.date(2026, 7, 1)
-    dates = {d, d + dt.timedelta(days=1), d + dt.timedelta(days=2),
-             d + dt.timedelta(days=5)}
-    runs = watch.consecutive_runs(dates)
-    # one 3-night run starting Jul 1, one 1-night run starting Jul 6
-    assert (d, 3) in runs
-    assert (d + dt.timedelta(days=5), 1) in runs
-    assert watch.consecutive_runs(set()) == []
-
-
-def test_gtc_booking_url():
-    url = watch.gtc_booking_url(-2147483371, -2147483589, "2026-07-10", 2)
-    assert url.startswith("https://washington.goingtocamp.com/create-booking/results?")
-    assert "mapId=-2147483371" in url
-    assert "resourceLocationId=-2147483589" in url
-    assert "startDate=2026-07-10" in url
-    assert "endDate=2026-07-12" in url   # start + 2 nights
-    assert "equipmentId=-32768" in url
-
-
-def test_recgov_booking_url():
-    url = watch.recgov_booking_url(232064, "2026-07-27", 7)
-    assert url == "https://www.recreation.gov/camping/campgrounds/232064/availability"
-
-
-def test_covers_target_weekend():
-    """Drive the assertions off the live TARGET_WEEKENDS config so the test
-    stays correct as weekends are booked/removed. Verifies the date-math
-    invariants: a stay matches iff it contains ALL required nights of a
-    weekend; partial/off-target stays do not match."""
-    f = watch.covers_target_weekend
-
-    if not watch.TARGET_WEEKENDS:
-        # No weekends configured (all booked) -> nothing ever matches.
-        assert f(dt.date(2026, 7, 17), 2) is None
-        assert f(dt.date(2026, 6, 24), 2) is None
-        return
-
-    for label, required in watch.TARGET_WEEKENDS:
-        fri = required[0]  # first required night = the Friday
-        # exact 2-night Fri->Sun stay matches
-        assert f(fri, 2) == label
-        # longer stay spanning the weekend also matches (Thu->Mon)
-        assert f(fri - dt.timedelta(days=1), 4) == label
-        # only the Friday night (missing Saturday) -> no match
-        assert f(fri, 1) is None
-        # Sat+Sun (missing Friday night) -> no match
-        assert f(fri + dt.timedelta(days=1), 2) is None
-        # a stay a week earlier (off-target) -> no match
-        assert f(fri - dt.timedelta(days=7), 2) is None
-
-    # A near-term opening unrelated to any target weekend -> no match.
-    assert f(dt.date(2026, 6, 24), 2) is None
-
-
-
-
-
-# --------------------------------------------------------------------------- #
-# 2. WA State Parks availability path (offline mock)
-# --------------------------------------------------------------------------- #
-class _FakeProvider:
-    """Mimics camply's GoingToCamp provider for the MAPDATA traversal.
-
-    LIST_CAMPGROUNDS -> one facility with a rootMapId.
-    MAPDATA on root  -> empty resources, one child map link.
-    MAPDATA on child -> one resource with 3 open nights then closed.
-
-    Crucially it raises if anyone calls SITE_DETAILS / resource/details,
-    proving the watcher never depends on the broken endpoint.
-    """
-
-    REC = 3
-    FID = -2147483647
-    ROOT = -2147480000
-    CHILD = -2147470000
-
-    def __init__(self):
+class FakeOpener:
+    def __init__(self, *results):
+        self.results = list(results)
         self.calls = []
 
-    # Two candidate sites in MAPDATA, BOTH MAPDATA-available (code 0):
-    #   BOOKABLE -> also web-bookable per /api/occupancy (should survive)
-    #   PHANTOM  -> NOT in occupancy bookable set (walk-in/host; must be dropped)
-    BOOKABLE = "-2147460000"
-    PHANTOM = "-2147460001"
+    def open(self, request, timeout):
+        self.calls.append((request, timeout))
+        result = self.results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
 
-    def _api_request(self, rec_area_id, endpoint_name, params=None):
+
+class HttpTransportTests(unittest.TestCase):
+    HOST = "api.example.com"
+
+    def client(self, opener, **kwargs):
+        return campwatch_http.JsonHttpClient(
+            allowed_hosts={self.HOST},
+            opener=opener,
+            sleeper=kwargs.pop("sleeper", lambda delay: None),
+            randomizer=kwargs.pop("randomizer", lambda: 0.0),
+            **kwargs,
+        )
+
+    def test_destination_boundary_rejects_unsafe_url_forms(self):
+        client = self.client(FakeOpener())
+        unsafe = [
+            "http://api.example.com/data",
+            "https://other.example.com/data",
+            "https://user@api.example.com/data",
+            "https://api.example.com:444/data",
+            "https://api.example.com/data?embedded=true",
+            "https://api.example.com/data#fragment",
+        ]
+        for url in unsafe:
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                client.get_json(url)
+
+    def test_request_uses_allowlisted_url_and_encodes_parameters(self):
+        opener = FakeOpener(FakeHttpResponse(b'{"ok": true}'))
+        client = self.client(opener)
+        self.assertEqual(
+            client.get_json(
+                "https://api.example.com/data",
+                params={"flag": True, "filter": {"a": 1}},
+            ),
+            {"ok": True},
+        )
+        request, timeout = opener.calls[0]
+        self.assertEqual(timeout, 30)
+        self.assertEqual(request.host, self.HOST)
+        self.assertIn("flag=true", request.full_url)
+        self.assertIn("filter=%7B%22a%22%3A1%7D", request.full_url)
+
+    def test_redirect_status_is_not_followed_or_retried(self):
+        headers = Message()
+        headers["Location"] = "https://other.example.com/"
+        redirect = urllib.error.HTTPError(
+            "https://api.example.com/data", 302, "redirect", headers, None
+        )
+        opener = FakeOpener(redirect)
+        client = self.client(opener)
+        with self.assertRaises(campwatch_http.HttpRequestError) as raised:
+            client.get_json("https://api.example.com/data")
+        self.assertEqual(raised.exception.status, 302)
+        self.assertEqual(len(opener.calls), 1)
+
+    def test_retryable_status_honors_capped_retry_after(self):
+        sleeps = []
+        opener = FakeOpener(
+            FakeHttpResponse(b"busy", status=503, headers={"Retry-After": "20"}),
+            FakeHttpResponse(b'{"ok": true}'),
+        )
+        client = self.client(opener, max_retry_delay=3, sleeper=sleeps.append)
+        self.assertEqual(
+            client.get_json("https://api.example.com/data"), {"ok": True}
+        )
+        self.assertEqual(sleeps, [3])
+        self.assertEqual(len(opener.calls), 2)
+
+    def test_transport_retry_uses_jittered_backoff(self):
+        sleeps = []
+        opener = FakeOpener(
+            urllib.error.URLError("offline"),
+            FakeHttpResponse(b'{"ok": true}'),
+        )
+        client = self.client(
+            opener, sleeper=sleeps.append, randomizer=lambda: 0.5
+        )
+        self.assertEqual(
+            client.get_json("https://api.example.com/data"), {"ok": True}
+        )
+        self.assertEqual(sleeps, [1.125])
+
+    def test_retry_wait_budget_prevents_another_attempt(self):
+        opener = FakeOpener(
+            FakeHttpResponse(b"busy", status=503),
+            FakeHttpResponse(b'{"should_not": "run"}'),
+        )
+        client = self.client(opener, retry_wait_budget=0)
+        with self.assertRaises(campwatch_http.HttpRequestError):
+            client.get_json("https://api.example.com/data")
+        self.assertEqual(len(opener.calls), 1)
+
+    def test_malformed_json_is_not_retried(self):
+        opener = FakeOpener(FakeHttpResponse(b"<html>blocked</html>"))
+        client = self.client(opener)
+        with self.assertRaisesRegex(
+            campwatch_http.HttpRequestError, "non-JSON response"
+        ):
+            client.get_json("https://api.example.com/data")
+        self.assertEqual(len(opener.calls), 1)
+
+    def test_oversized_body_is_rejected_without_retry(self):
+        opener = FakeOpener(FakeHttpResponse(b"123456789"))
+        client = self.client(opener)
+        with (
+            mock.patch.object(campwatch_http, "MAX_JSON_BYTES", 8),
+            self.assertRaisesRegex(campwatch_http.HttpRequestError, "exceeded"),
+        ):
+            client.get_json("https://api.example.com/data")
+        self.assertEqual(len(opener.calls), 1)
+
+
+class ProviderClientTests(unittest.TestCase):
+    def test_going_to_camp_rejects_malformed_endpoint_schema(self):
+        http = mock.Mock()
+        http.get_json.return_value = {"resourceLocations": []}
+        client = campwatch_http.GoingToCampClient(http=http)
+        with self.assertRaises(campwatch_http.HttpRequestError):
+            client.request_json(3, "LIST_CAMPGROUNDS")
+
+    def test_recreation_gov_rejects_malformed_campsite_schema(self):
+        http = mock.Mock()
+        http.get_json.return_value = {
+            "campsites": {"123": {"availabilities": "not-a-map"}}
+        }
+        client = campwatch_http.RecreationGovClient(http=http)
+        with self.assertRaises(campwatch_http.HttpRequestError):
+            client.month(123, dt.date(2026, 8, 1))
+
+
+class AvailabilityMapTests(unittest.TestCase):
+    def test_map_data_joins_available_state_with_local_coordinates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = {
+                "config_path": root / "watch_config.json",
+                "state_path": root / "last_state.json",
+                "progress_path": root / "scan_progress.json",
+                "candidates_path": root / "candidates.json",
+                "wa_parks_path": root / "wa_parks.json",
+            }
+            paths["config_path"].write_text(
+                json.dumps(
+                    {
+                        "recdotgov": [
+                            {"id": 1, "name": "Federal Camp", "distance_km": 16.1, "dist_mi": 10}
+                        ],
+                        "going_to_camp": [
+                            {
+                                "id": -2,
+                                "name": "State Park",
+                                "rec_area": 3,
+                                "root_map_id": -3,
+                                "est_drive_hrs": 1.2,
+                            }
+                        ],
+                    }
+                )
+            )
+            paths["state_path"].write_text(
+                json.dumps(
+                    {
+                        "rg:1": [
+                            *[f"A|2026-08-{day:02d}|2" for day in range(1, 14)],
+                            "B|2026-08-08|3",
+                        ],
+                        "wa:-2": ["-20|2026-08-09|2"],
+                    }
+                )
+            )
+            paths["progress_path"].write_text(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "completed": 4,
+                        "total": 10,
+                        "signature": "private-internal-value",
+                        "pid": 123,
+                    }
+                )
+            )
+            paths["candidates_path"].write_text(
+                json.dumps([{"id": 1, "lat": 47.1, "lon": -122.1}])
+            )
+            paths["wa_parks_path"].write_text(
+                json.dumps([{"facility_id": -2, "lat": 47.2, "lon": -122.2}])
+            )
+
+            data = availability_map.build_map_data(**paths)
+            self.assertEqual([item["name"] for item in data["locations"]], [
+                "Federal Camp", "State Park"
+            ])
+            self.assertEqual(data["locations"][0]["available_sites"], 2)
+            self.assertEqual(len(data["locations"][0]["runs"]), 14)
+            self.assertIn("recreation.gov", data["locations"][0]["booking_url"])
+            self.assertIn("goingtocamp.com", data["locations"][1]["booking_url"])
+            self.assertEqual(data["progress"], {
+                "status": "running", "completed": 4, "total": 10
+            })
+            self.assertNotIn("signature", data["progress"])
+            self.assertEqual(data["bounds"]["north"], 47.2)
+
+    def test_map_html_uses_no_external_javascript_and_attributes_tiles(self):
+        self.assertNotIn("<script src=", availability_map.MAP_HTML)
+        self.assertIn("https://tile.openstreetmap.org/{z}/{x}/{y}.png", availability_map.MAP_HTML)
+        self.assertIn("© OpenStreetMap contributors", availability_map.MAP_HTML)
+        self.assertIn('id="date-from" type="date"', availability_map.MAP_HTML)
+        self.assertIn('id="date-through" type="date"', availability_map.MAP_HTML)
+        self.assertIn('id="hover-card" role="dialog"', availability_map.MAP_HTML)
+        self.assertIn('className = "run-table"', availability_map.MAP_HTML)
+        self.assertIn('["Site", "Available dates", "Nights"]', availability_map.MAP_HTML)
+        self.assertIn('["Available dates", "Nights", "Sites"]', availability_map.MAP_HTML)
+        self.assertIn('makeCardAction("Pin availability card", "pin")', availability_map.MAP_HTML)
+        self.assertIn('makeCardAction("Close availability card", "close")', availability_map.MAP_HTML)
+
+
+class CandidateDiscoveryTests(unittest.TestCase):
+    class Client:
+        def __init__(self, response):
+            self.response = response
+            self.calls = []
+
+        def search(self, params):
+            self.calls.append(params)
+            return self.response
+
+    def test_fetch_modes_only_change_the_upstream_query(self):
+        response = {"results": [], "total": 0}
+        server = self.Client(response)
+        local = self.Client(response)
+        common = {
+            "home_lat": 47.0,
+            "home_lon": -122.0,
+            "max_distance_km": 90.0,
+            "sleeper": lambda delay: None,
+        }
+        build_candidates.fetch_catalog(
+            server, distance_filter="server", **common
+        )
+        build_candidates.fetch_catalog(
+            local, distance_filter="client", **common
+        )
+        self.assertEqual(server.calls[0]["radius"], 90.0)
+        self.assertEqual(server.calls[0]["lat"], 47.0)
+        self.assertEqual(server.calls[0]["lng"], -122.0)
+        self.assertNotIn("lat", local.calls[0])
+        self.assertNotIn("lng", local.calls[0])
+        self.assertEqual(local.calls[0]["q"], "Washington")
+
+    def test_common_selection_uses_kilometers_and_reports_both_units(self):
+        valid = {
+            "entity_id": "123",
+            "entity_type": "campground",
+            "state_code": "Washington",
+            "name": "Example Campground",
+            "latitude": 47.45,
+            "longitude": -122.0,
+            "reservable": True,
+            "campsites_count": "10",
+            "campsite_type_of_use": ["Overnight"],
+            "average_rating": 4.5,
+        }
+        too_far = dict(valid, entity_id="456", latitude=48.0)
+        candidates = build_candidates.select_candidates(
+            [valid, too_far],
+            home_lat=47.0,
+            home_lon=-122.0,
+            max_distance_km=90.0,
+        )
+        self.assertEqual([item["id"] for item in candidates], ["123"])
+        self.assertAlmostEqual(candidates[0]["distance_km"], 50.0, delta=0.2)
+        self.assertAlmostEqual(candidates[0]["dist_mi"], 31.1, delta=0.2)
+
+
+class WatchLogicTests(unittest.TestCase):
+    def setUp(self):
+        watch._booking_categories_cache.clear()
+        watch._sub_equipment_cache.clear()
+
+    def test_is_group(self):
+        self.assertTrue(watch.is_group("Group Site A"))
+        self.assertTrue(watch.is_group("Equestrian", "HORSE CAMP"))
+        self.assertTrue(watch.is_group("Overflow Lot"))
+        self.assertFalse(watch.is_group("Site 042"))
+
+    def test_consecutive_runs(self):
+        day = dt.date(2026, 7, 1)
+        dates = {day, day + dt.timedelta(days=1), day + dt.timedelta(days=5)}
+        self.assertEqual(
+            watch.consecutive_runs(dates),
+            [(day, 2), (day + dt.timedelta(days=5), 1)],
+        )
+
+    def test_booking_urls(self):
+        url = watch.gtc_booking_url(-10, -20, "2026-08-07", 2)
+        self.assertTrue(url.startswith("https://washington.goingtocamp.com/"))
+        self.assertIn("startDate=2026-08-07", url)
+        self.assertIn("endDate=2026-08-09", url)
+        self.assertEqual(
+            watch.recgov_booking_url(232064, "2026-08-07", 2),
+            "https://www.recreation.gov/camping/campgrounds/232064/availability",
+        )
+
+    def test_target_matching_and_adaptive_cadence(self):
+        target = dt.date(2026, 8, 7)
+        targets = [("weekend", [target, target + dt.timedelta(days=1)])]
+        with mock.patch.object(watch, "TARGET_WEEKENDS", targets):
+            self.assertEqual(watch.covers_target_weekend(target, 2), "weekend")
+            self.assertIsNone(watch.covers_target_weekend(target, 1))
+            self.assertEqual(
+                watch.recommended_poll_minutes(dt.date(2026, 8, 1)), 10
+            )
+            self.assertEqual(
+                watch.recommended_poll_minutes(dt.date(2026, 7, 15)), 30
+            )
+            self.assertEqual(
+                watch.recommended_poll_minutes(dt.date(2026, 6, 1)), 60
+            )
+            self.assertTrue(watch.targets_in_watch_window(dt.date(2026, 8, 1)))
+            self.assertFalse(watch.targets_in_watch_window(dt.date(2026, 1, 1)))
+        with mock.patch.object(watch, "TARGET_WEEKENDS", []):
+            self.assertIsNone(watch.recommended_poll_minutes(dt.date(2026, 8, 1)))
+
+    def test_load_targets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "targets.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "watch_all": False,
+                        "weekends": [
+                            {"label": "trip", "nights": ["2026-08-07", "2026-08-08"]}
+                        ],
+                    }
+                )
+            )
+            self.assertEqual(
+                watch.load_target_weekends(path),
+                [
+                    (
+                        "trip",
+                        [dt.date(2026, 8, 7), dt.date(2026, 8, 8)],
+                    )
+                ],
+            )
+
+    def test_schedule_reacts_immediately_when_private_targets_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            targets = Path(tmp) / "targets.json"
+            state = Path(tmp) / "schedule.json"
+            targets.write_text('{"watch_all": false, "weekends": []}')
+            with (
+                mock.patch.object(watch, "TARGETS_FILE", targets),
+                mock.patch.object(watch, "SCHEDULE_STATE", state),
+            ):
+                now = dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc)
+                watch.record_next_poll(60, now=now)
+                self.assertFalse(
+                    watch.scheduled_poll_due(now + dt.timedelta(minutes=30))
+                )
+                targets.write_text('{"watch_all": true, "weekends": []}')
+                self.assertTrue(
+                    watch.scheduled_poll_due(now + dt.timedelta(minutes=30))
+                )
+
+    def test_incremental_checkpoint_preserves_unprocessed_previous_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "last_state.json"
+            previous = {"rg:1": ["old"], "wa:2": ["not-processed-yet"]}
+            current = {"rg:1": ["new"]}
+            with mock.patch.object(watch, "STATE_FILE", state_file):
+                watch._write_state_checkpoint(previous, current)
+                self.assertEqual(
+                    json.loads(state_file.read_text()),
+                    {"rg:1": ["new"], "wa:2": ["not-processed-yet"]},
+                )
+                watch._write_state_checkpoint(previous, current, complete=True)
+                self.assertEqual(json.loads(state_file.read_text()), current)
+
+    def test_incremental_state_is_not_the_completed_alert_baseline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "last_state.json"
+            complete_file = Path(tmp) / "last_complete_state.json"
+            state_file.write_text('{"rg:1": ["partial-new-result"]}')
+            complete_file.write_text('{"rg:1": ["last-complete-result"]}')
+            with (
+                mock.patch.object(watch, "STATE_FILE", state_file),
+                mock.patch.object(watch, "COMPLETE_STATE_FILE", complete_file),
+            ):
+                self.assertEqual(
+                    watch._load_complete_state(),
+                    {"rg:1": ["last-complete-result"]},
+                )
+                complete_file.unlink()
+                self.assertEqual(
+                    watch._load_complete_state(),
+                    {"rg:1": ["partial-new-result"]},
+                )
+
+    def test_compatible_checkpoint_resumes_completed_target_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            progress_file = Path(tmp) / "scan_progress.json"
+            state_file = Path(tmp) / "last_state.json"
+            state_file.write_text(
+                json.dumps({"rg:1": ["saved"], "rg:2": ["not-checkpointed"]})
+            )
+            progress_file.write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "signature": "same-scan",
+                        "completed_keys": ["rg:1"],
+                    }
+                )
+            )
+            with (
+                mock.patch.object(watch, "SCAN_PROGRESS", progress_file),
+                mock.patch.object(watch, "STATE_FILE", state_file),
+            ):
+                self.assertEqual(
+                    watch._load_resume_checkpoint("same-scan"),
+                    (["rg:1"], {"rg:1": ["saved"]}),
+                )
+                self.assertEqual(watch._load_resume_checkpoint("changed-scan"), ([], {}))
+
+    def test_resumed_state_rebuilds_summary_and_new_alerts(self):
+        cfg = {
+            "recdotgov": [
+                {"id": 1, "name": "Example", "rating": 4.5, "dist_mi": 10.0}
+            ],
+            "going_to_camp": [],
+        }
+        state = {"rg:1": ["A|2026-08-07|2"]}
+        with mock.patch.object(watch, "TARGET_WEEKENDS", None):
+            summary, alerts = watch._summary_from_state(cfg, state, {})
+        self.assertEqual(summary[0]["runs"][0]["site"], "A")
+        self.assertEqual(alerts[0]["new_runs"], ["A|2026-08-07|2"])
+
+    def test_main_skips_targets_from_a_compatible_resume_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_file = root / "watch_config.json"
+            state_file = root / "last_state.json"
+            complete_file = root / "last_complete_state.json"
+            progress_file = root / "scan_progress.json"
+            today = dt.date.today()
+            saved_run = f"A|{today.isoformat()}|2"
+            cfg = {
+                "recdotgov": [
+                    {"id": 1, "name": "Already done", "rating": 4.5, "dist_mi": 1},
+                    {"id": 2, "name": "Still pending", "rating": 4.5, "dist_mi": 2},
+                ],
+                "going_to_camp": [],
+            }
+            config_file.write_text(json.dumps(cfg))
+            state_file.write_text(json.dumps({"rg:1": [saved_run]}))
+            complete_file.write_text(json.dumps({"rg:1": [saved_run]}))
+            with mock.patch.object(watch, "TARGET_WEEKENDS", None):
+                signature = watch._scan_signature(
+                    cfg, today, today + dt.timedelta(days=watch.WINDOW_DAYS)
+                )
+            progress_file.write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "signature": signature,
+                        "completed_keys": ["rg:1"],
+                    }
+                )
+            )
+            with (
+                mock.patch.object(watch, "TARGET_WEEKENDS", None),
+                mock.patch.object(watch, "CONFIG", config_file),
+                mock.patch.object(watch, "STATE_FILE", state_file),
+                mock.patch.object(watch, "COMPLETE_STATE_FILE", complete_file),
+                mock.patch.object(watch, "SCAN_PROGRESS", progress_file),
+                mock.patch.object(watch, "RecreationGovClient", return_value=mock.Mock()),
+                mock.patch.object(watch, "GoingToCampClient", return_value=mock.Mock()),
+                mock.patch.object(watch, "recgov_available_nights", return_value={}) as poll,
+                mock.patch("builtins.print"),
+            ):
+                self.assertEqual(watch.main(), 0)
+            self.assertEqual(poll.call_count, 1)
+            self.assertEqual(poll.call_args.args[1], 2)
+            self.assertEqual(
+                json.loads(state_file.read_text()),
+                {"rg:1": [saved_run], "rg:2": []},
+            )
+            self.assertEqual(json.loads(progress_file.read_text())["status"], "complete")
+
+
+class FakeRecClient:
+    def month(self, campground_id, month):
+        return {
+            "count": 2,
+            "campsites": {
+                "100": {
+                    "site": "A|1",
+                    "campsite_type": "STANDARD",
+                    "availabilities": {
+                        "2026-08-07T00:00:00Z": "Available",
+                        "2026-08-08T00:00:00Z": "Reserved",
+                    },
+                },
+                "101": {
+                    "site": "Group Site",
+                    "campsite_type": "GROUP",
+                    "availabilities": {"2026-08-07T00:00:00Z": "Available"},
+                },
+            },
+        }
+
+
+class RecreationGovTests(unittest.TestCase):
+    def test_only_explicit_available_non_group_nights_are_kept(self):
+        by_site = watch.recgov_available_nights(
+            FakeRecClient(),
+            123,
+            dt.date(2026, 8, 1),
+            dt.date(2026, 9, 1),
+        )
+        self.assertEqual(by_site, {"A/1 (#100)": {dt.date(2026, 8, 7)}})
+
+
+class FakeGoingToCampClient:
+    REC = 3
+    FID = -100
+    ROOT = -200
+    CHILD = -300
+    BOOKABLE = "-400"
+    PHANTOM = "-401"
+
+    def __init__(self, fail_occupancy=False):
+        self.fail_occupancy = fail_occupancy
+        self.calls = []
+
+    def request_json(self, rec_area_id, endpoint_name, params=None):
         self.calls.append((endpoint_name, params))
-        if endpoint_name == "SITE_DETAILS":
-            raise AssertionError("SITE_DETAILS must not be called (404 endpoint)")
         if endpoint_name == "LIST_CAMPGROUNDS":
             return [{"resourceLocationId": self.FID, "rootMapId": self.ROOT}]
         if endpoint_name == "LIST_EQUIPMENT":
-            return [{"equipmentCategoryId": watch.NON_GROUP_EQUIPMENT,
-                     "subEquipmentCategories": [{"subEquipmentCategoryId": -32768}]}]
+            return [
+                {
+                    "equipmentCategoryId": watch.NON_GROUP_EQUIPMENT,
+                    "subEquipmentCategories": [{"subEquipmentCategoryId": -32768}],
+                }
+            ]
         if endpoint_name == "BOOKING_CATEGORIES":
             return [{"bookingCategoryId": 0, "capacityCategoryId": 99}]
         if endpoint_name == "OCCUPANCY":
-            # Only the BOOKABLE site is truly web-bookable (availability 0).
-            # The PHANTOM site is "Unavailable" (2) per occupancy, so dropped.
-            return {"resourceOccupancy": [
-                {"resourceId": self.BOOKABLE, "availability": 0},
-                {"resourceId": self.PHANTOM, "availability": 2},
-            ]}
+            if self.fail_occupancy:
+                raise OSError("offline")
+            return {
+                "resourceOccupancy": [
+                    {"resourceId": self.BOOKABLE, "availability": 0},
+                    {"resourceId": self.PHANTOM, "availability": 2},
+                ]
+            }
         if endpoint_name == "MAPDATA":
-            mid = params["mapId"]
-            if mid == self.ROOT:
+            if params["mapId"] == self.ROOT:
                 return {
-                    "mapId": self.ROOT,
                     "resourceAvailabilities": {},
                     "mapLinkAvailabilities": {str(self.CHILD): []},
-                    "mapAvailabilities": [],
                 }
-            if mid == self.CHILD:
-                # 31-night window: first 3 nights open (0), rest closed (3).
-                # BOTH sites look MAPDATA-available; occupancy must separate them.
-                slots = [{"availability": 0}] * 3 + [{"availability": 3}] * 28
-                return {
-                    "mapId": self.CHILD,
-                    "resourceAvailabilities": {
-                        self.BOOKABLE: slots,
-                        self.PHANTOM: slots,
-                    },
-                    "mapLinkAvailabilities": {},
-                    "mapAvailabilities": [],
-                }
+            slots = [{"availability": 0}] * 3 + [{"availability": 3}] * 5
+            return {
+                "resourceAvailabilities": {
+                    self.BOOKABLE: slots,
+                    self.PHANTOM: slots,
+                },
+                "mapLinkAvailabilities": {},
+            }
         raise AssertionError(f"unexpected endpoint {endpoint_name}")
 
 
-def test_gtc_available_nights_offline(monkeypatch):
-    fake = _FakeProvider()
-    # Make watch.py's _gtc.GoingToCamp() return our fake; clear rootmap cache.
-    monkeypatch.setattr(watch._gtc, "GoingToCamp", lambda *a, **k: fake)
+class GoingToCampTests(unittest.TestCase):
+    def setUp(self):
+        watch._booking_categories_cache.clear()
+        watch._sub_equipment_cache.clear()
 
-    start = dt.date(2026, 9, 20)
-    end = start + dt.timedelta(days=31)
-    by_site = watch.gtc_available_nights(_FakeProvider.REC, _FakeProvider.FID,
-                                         start, end)
+    def test_occupancy_removes_phantom_site(self):
+        client = FakeGoingToCampClient()
+        start = dt.date(2026, 8, 1)
+        by_site = watch.gtc_available_nights(
+            client.REC,
+            client.FID,
+            start,
+            start + dt.timedelta(days=8),
+            client=client,
+        )
+        self.assertEqual(
+            by_site,
+            {
+                client.BOOKABLE: {
+                    start,
+                    start + dt.timedelta(days=1),
+                    start + dt.timedelta(days=2),
+                }
+            },
+        )
 
-    # Both sites are MAPDATA-available, but occupancy says only BOOKABLE is
-    # truly web-bookable. The PHANTOM site (walk-in/host) must be dropped.
-    assert len(by_site) == 1, f"phantom site not filtered: {by_site}"
-    (label, dates), = by_site.items()
-    # label is abs(resourceId) % 100000 of the BOOKABLE site
-    assert label == str(abs(int(_FakeProvider.BOOKABLE)) % 100000)
-    assert dates == {start, start + dt.timedelta(days=1),
-                     start + dt.timedelta(days=2)}
-
-    # the run-builder should see a single 3-night run >= MIN_NIGHTS
-    runs = watch.consecutive_runs(dates)
-    assert runs == [(start, 3)]
-
-    # occupancy cross-check must have been queried
-    endpoints = {c[0] for c in fake.calls}
-    assert "OCCUPANCY" in endpoints
-    # and prove SITE_DETAILS / resource/details was never requested
-    assert "SITE_DETAILS" not in endpoints
-    assert "MAPDATA" in endpoints
-    assert "LIST_CAMPGROUNDS" in endpoints
-
-
-@pytest.mark.skipif(
-    os.environ.get("CAMPLY_LIVE") != "1",
-    reason="set CAMPLY_LIVE=1 to run the live GoingToCamp API test",
-)
-def test_gtc_available_nights_live():
-    """Live: hit the real WA State Parks API for one park; assert no 400/404.
-
-    Fort Ebey (-2147483616) is a less-saturated park that reliably has
-    availability; we just assert the call SUCCEEDS and returns parsed nights.
-    """
-    start = dt.date.today()
-    end = start + dt.timedelta(days=90)
-    by_site = watch.gtc_available_nights(3, -2147483616, start, end)
-    # The mechanism must succeed (no exception). Availability itself may vary,
-    # but Fort Ebey is rarely fully booked 90 days out.
-    assert isinstance(by_site, dict)
+    def test_occupancy_failure_is_fail_closed(self):
+        client = FakeGoingToCampClient(fail_occupancy=True)
+        start = dt.date(2026, 8, 1)
+        with self.assertRaises(watch.AvailabilityVerificationError):
+            watch.gtc_available_nights(
+                client.REC,
+                client.FID,
+                start,
+                start + dt.timedelta(days=8),
+                client=client,
+            )
 
 
-# --------------------------------------------------------------------------- #
-# 3. Instant webhook notification (mocked HTTP)
-# --------------------------------------------------------------------------- #
-def test_send_trigger_disabled_is_noop(monkeypatch):
-    """When notifications are disabled, no HTTP call is made and it returns False."""
-    monkeypatch.setattr(watch, "NOTIFY_ENABLED", False)
-    monkeypatch.setattr(watch, "WEBHOOK_URL", "https://example.com/hook")
+class WebhookTests(unittest.TestCase):
+    def test_http_and_private_destinations_are_rejected(self):
+        with self.assertRaises(ValueError):
+            watch.validate_webhook_url("http://example.com/hook")
+        private_answer = [(None, None, None, None, ("127.0.0.1", 443))]
+        with mock.patch.object(watch.socket, "getaddrinfo", return_value=private_answer):
+            with self.assertRaises(ValueError):
+                watch.validate_webhook_url("https://example.com/hook")
 
-    def boom(*a, **k):
-        raise AssertionError("urlopen must not be called when disabled")
+    def test_public_https_destination_is_accepted(self):
+        public_answer = [(None, None, None, None, ("93.184.216.34", 443))]
+        with mock.patch.object(watch.socket, "getaddrinfo", return_value=public_answer):
+            self.assertEqual(
+                watch.validate_webhook_url("https://example.com/hook"),
+                "https://example.com/hook",
+            )
 
-    monkeypatch.setattr(watch.urllib.request, "urlopen", boom)
-    assert watch.send_trigger("X", "u", ["a|2026-07-10|2"], []) is False
+    def test_send_trigger_fails_soft_without_leaking_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            secret_url = "https://example.com/a-secret-token"
+            with (
+                mock.patch.object(watch, "NOTIFY_ENABLED", True),
+                mock.patch.object(watch, "WEBHOOK_URL", secret_url),
+                mock.patch.object(watch, "SENT_PINGS", Path(tmp) / "pings.json"),
+                mock.patch.object(watch, "_post_webhook", side_effect=OSError("boom")),
+                mock.patch.object(watch, "log") as logger,
+            ):
+                self.assertFalse(watch.send_trigger("X", "u", ["a|2026-08-07|2"], []))
+                logged = " ".join(str(call) for call in logger.call_args_list)
+                self.assertNotIn(secret_url, logged)
 
 
-def test_send_trigger_noop_without_url(monkeypatch):
-    """With no webhook URL configured, it is a silent no-op (returns False)."""
-    monkeypatch.setattr(watch, "NOTIFY_ENABLED", True)
-    monkeypatch.setattr(watch, "WEBHOOK_URL", "")
-    assert watch.send_trigger("X", "u", ["a|2026-07-10|2"], []) is False
+class RunnerTests(unittest.TestCase):
+    def test_log_rotation_is_bounded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cron.log"
+            path.write_text("x" * 100)
+            run_watch.rotate_log(path, max_bytes=50, backups=2)
+            self.assertFalse(path.exists())
+            self.assertTrue((Path(tmp) / "cron.log.1").exists())
 
+    def test_runner_uses_current_python_and_fixed_local_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = mock.Mock(returncode=0)
+            with (
+                mock.patch.object(run_watch, "HERE", root),
+                mock.patch.object(run_watch, "LOCK_FILE", root / ".run.lock"),
+                mock.patch.object(run_watch, "LOG_FILE", root / "cron.log"),
+                mock.patch.object(run_watch.subprocess, "run", return_value=result) as call,
+            ):
+                self.assertEqual(run_watch.main(), 0)
+                command = call.call_args.args[0]
+                self.assertEqual(command[0], run_watch.sys.executable)
+                self.assertEqual(command[1:], [str(root / "watch.py"), "--scheduled"])
 
-def test_send_trigger_fails_soft(monkeypatch):
-    """A transport error returns False and never raises."""
-    monkeypatch.setattr(watch, "NOTIFY_ENABLED", True)
-    monkeypatch.setattr(watch, "WEBHOOK_URL", "https://example.com/hook")
-    monkeypatch.setattr(watch, "SENT_PINGS", HERE / "sent_pings.test.json")
-
-    def boom(*a, **k):
-        raise OSError("connection refused")
-
-    monkeypatch.setattr(watch.urllib.request, "urlopen", boom)
-    assert watch.send_trigger("X", "u", ["a|2026-07-10|2"], []) is False
+    def test_private_settings_require_owner_only_permissions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text('{"webhook_url": "https://example.com/hook"}')
+            path.chmod(0o644)
+            with self.assertRaises(RuntimeError):
+                run_watch.load_private_settings({}, path)
+            path.chmod(0o600)
+            env = {}
+            campwatch_config.load_private_settings(env, path)
+            self.assertEqual(env["CAMPWATCH_WEBHOOK_URL"], "https://example.com/hook")
 
 
 if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-v"]))
+    unittest.main(verbosity=2)

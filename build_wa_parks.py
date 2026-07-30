@@ -1,8 +1,4 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.10"
-# dependencies = ["camply"]
-# ///
+#!/usr/bin/env python3
 """Build the FULL list of Washington State Parks (GoingToCamp rec-area 3 +
 Tacoma Power rec-area 6) that are within ~2 hours' drive of home, with their
 gpsCoordinates and rootMapId.
@@ -16,15 +12,15 @@ Writes wa_parks.json consumed by watch.py.
 """
 from __future__ import annotations
 
-import json
-import os
 import math
 from pathlib import Path
 
-from camply.providers.going_to_camp.going_to_camp_provider import GoingToCamp
+from campwatch_config import local_environment
+from campwatch_http import GoingToCampClient, atomic_write_json
 
-HOME_LAT = float(os.environ.get("CAMPWATCH_HOME_LAT", "47.6062"))
-HOME_LON = float(os.environ.get("CAMPWATCH_HOME_LON", "-122.3321"))
+LOCAL_ENV = local_environment()
+HOME_LAT = float(LOCAL_ENV.get("CAMPWATCH_HOME_LAT", "47.6062"))
+HOME_LON = float(LOCAL_ENV.get("CAMPWATCH_HOME_LON", "-122.3321"))
 DRIVE_HRS = 2.0
 MARGIN_HRS = 0.25  # keep borderline parks just over the line, flagged
 ROAD_FACTOR = 1.35  # crow-flies -> road distance multiplier (PNW mountains)
@@ -65,10 +61,10 @@ def parse_gps(s):
 
 
 def main():
-    g = GoingToCamp()
+    g = GoingToCampClient()
     kept, dropped_far, dropped_noncamp, no_coords = [], [], [], []
     for rec_area_id, label in REC_AREAS.items():
-        resp = g._api_request(rec_area_id, "LIST_CAMPGROUNDS")
+        resp = g.request_json(rec_area_id, "LIST_CAMPGROUNDS")
         for f in resp:
             loc = f.get("resourceLocationId")
             lv = (f.get("localizedValues") or [{}])[0]
@@ -109,11 +105,11 @@ def main():
             )
 
     kept.sort(key=lambda c: (c["est_drive_hrs"] is None, c["est_drive_hrs"] or 0))
-    OUT.write_text(json.dumps(kept, indent=2))
+    atomic_write_json(OUT, kept, mode=0o644)
     print(f"KEPT {len(kept)} WA parks within ~{DRIVE_HRS}h (+{MARGIN_HRS}h margin)")
     print(f"  dropped (too far): {len(dropped_far)}")
     print(f"  dropped (non-campground): {len(dropped_noncamp)}")
-    print(f"  kept w/o coords (flagged borderline): {len(no_coords)}")
+    print(f"  dropped (no coordinates): {len(no_coords)}")
     print()
     for c in kept:
         h = f"{c['est_drive_hrs']}h" if c["est_drive_hrs"] is not None else "  ?  "

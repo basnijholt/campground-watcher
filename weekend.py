@@ -1,8 +1,4 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.10"
-# dependencies = []
-# ///
+#!/usr/bin/env python3
 """Show campgrounds with a run covering specific nights (default: next Fri+Sat)."""
 import datetime as dt
 import json
@@ -12,6 +8,21 @@ from pathlib import Path
 HERE = Path(__file__).parent
 state = json.loads((HERE / "last_state.json").read_text())
 cfg = json.loads((HERE / "watch_config.json").read_text())
+progress_path = HERE / "scan_progress.json"
+
+if progress_path.exists():
+    try:
+        progress = json.loads(progress_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        progress = {}
+    if progress.get("status") in {"running", "failed"}:
+        completed = progress.get("completed", "?")
+        total = progress.get("total", "?")
+        status = "is in progress" if progress.get("status") == "running" else "stopped early"
+        print(
+            f"NOTE: the latest scan {status} ({completed}/{total}); "
+            "unprocessed campgrounds show their previous results.\n"
+        )
 
 # target nights: args = list of YYYY-MM-DD, else next Fri+Sat
 if len(sys.argv) > 1:
