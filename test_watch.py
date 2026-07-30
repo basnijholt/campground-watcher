@@ -210,7 +210,10 @@ class AvailabilityMapTests(unittest.TestCase):
             paths["state_path"].write_text(
                 json.dumps(
                     {
-                        "rg:1": ["A|2026-08-07|2", "B|2026-08-08|3"],
+                        "rg:1": [
+                            *[f"A|2026-08-{day:02d}|2" for day in range(1, 14)],
+                            "B|2026-08-08|3",
+                        ],
                         "wa:-2": ["-20|2026-08-09|2"],
                     }
                 )
@@ -238,6 +241,7 @@ class AvailabilityMapTests(unittest.TestCase):
                 "Federal Camp", "State Park"
             ])
             self.assertEqual(data["locations"][0]["available_sites"], 2)
+            self.assertEqual(len(data["locations"][0]["runs"]), 14)
             self.assertIn("recreation.gov", data["locations"][0]["booking_url"])
             self.assertIn("goingtocamp.com", data["locations"][1]["booking_url"])
             self.assertEqual(data["progress"], {
@@ -250,6 +254,11 @@ class AvailabilityMapTests(unittest.TestCase):
         self.assertNotIn("<script src=", availability_map.MAP_HTML)
         self.assertIn("https://tile.openstreetmap.org/{z}/{x}/{y}.png", availability_map.MAP_HTML)
         self.assertIn("© OpenStreetMap contributors", availability_map.MAP_HTML)
+        self.assertIn('id="date-from" type="date"', availability_map.MAP_HTML)
+        self.assertIn('id="date-through" type="date"', availability_map.MAP_HTML)
+        self.assertIn('id="hover-card" role="tooltip"', availability_map.MAP_HTML)
+        self.assertIn('className = "run-table"', availability_map.MAP_HTML)
+        self.assertIn('["Site", "Available dates", "Nights"]', availability_map.MAP_HTML)
 
 
 class CandidateDiscoveryTests(unittest.TestCase):

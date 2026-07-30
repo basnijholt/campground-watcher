@@ -114,7 +114,9 @@ def _location_record(
         "latest_night": max(run["last_night"] for run in runs),
         "max_nights": max(run["nights"] for run in runs),
         "booking_url": booking_url,
-        "runs": runs[:12],
+        # The browser filters these locally. Keep every run so a short date
+        # window cannot accidentally hide availability after the first page.
+        "runs": runs,
     }
 
 
@@ -247,6 +249,16 @@ MAP_HTML = r"""<!doctype html>
     #status { font-size: 13px; opacity: .9; }
     #layout { display: grid; grid-template-columns: minmax(250px, 340px) 1fr; height: calc(100vh - 72px); }
     #sidebar { overflow: auto; padding: 12px; border-right: 1px solid #c9c5b8; background: #fffdf7; }
+    #filters { margin: 0 0 12px; padding: 10px; border: 1px solid #d4d0c4; border-radius: 9px; background: #f8f6ef; }
+    #filters legend { padding: 0 4px; font-size: 13px; font-weight: 700; }
+    .date-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .date-fields label { display: grid; gap: 3px; color: #536158; font-size: 11px; font-weight: 650; }
+    .date-fields input { width: 100%; min-width: 0; padding: 6px; border: 1px solid #aaa69b; border-radius: 6px;
+      background: white; color: #17211a; font: inherit; font-size: 12px; }
+    #presets { display: flex; gap: 5px; margin-top: 8px; }
+    #presets button { flex: 1; padding: 5px 3px; border: 1px solid #aaa69b; border-radius: 6px; background: white;
+      color: #284034; cursor: pointer; font-size: 11px; }
+    #presets button:hover, #presets button:focus-visible { border-color: #23704a; outline: 1px solid #23704a; }
     #summary { font-size: 14px; margin: 2px 2px 12px; }
     #locations { display: grid; gap: 8px; }
     .location { width: 100%; text-align: left; border: 1px solid #d4d0c4; border-radius: 9px; padding: 10px;
@@ -267,10 +279,23 @@ MAP_HTML = r"""<!doctype html>
     #controls button { border: 1px solid #777; background: white; border-radius: 6px; min-width: 38px; min-height: 36px;
       font-size: 18px; cursor: pointer; }
     #popup { position: absolute; z-index: 6; left: 16px; bottom: 26px; max-width: 390px; padding: 14px;
-      border-radius: 10px; background: #fffffff2; box-shadow: 0 5px 25px #0004; display: none; }
+      max-height: min(520px, calc(100% - 48px)); overflow: auto; border-radius: 10px; background: #fffffff2;
+      box-shadow: 0 5px 25px #0004; display: none; }
     #popup h2 { margin: 0 24px 5px 0; font-size: 17px; }
     #popup p { margin: 5px 0; font-size: 13px; }
     #popup a { color: #075b36; font-weight: 650; }
+    .run-table { width: 100%; margin: 7px 0 5px; border-collapse: separate; border-spacing: 0; overflow: hidden;
+      border: 1px solid #cbc7bb; border-radius: 7px; font-size: 11px; }
+    .run-table th, .run-table td { padding: 5px 6px; text-align: left; vertical-align: top; border-bottom: 1px solid #e3dfd4; }
+    .run-table th { background: #e7efe9; color: #294536; font-size: 10px; letter-spacing: .02em; text-transform: uppercase; }
+    .run-table th:last-child, .run-table td:last-child { text-align: right; white-space: nowrap; }
+    .run-table tbody tr:nth-child(even) { background: #f6f4ed; }
+    .run-table tbody tr:last-child td { border-bottom: 0; }
+    .more-runs { margin: 5px 1px 8px; color: #536158; font-size: 11px; }
+    #hover-card { position: absolute; z-index: 8; width: min(430px, calc(100% - 24px)); padding: 9px 10px;
+      border: 1px solid #52645a; border-radius: 8px; background: #fffffff7; box-shadow: 0 4px 16px #0005;
+      pointer-events: none; transform: translate(-50%, -100%); font-size: 12px; }
+    #hover-card strong { display: block; margin-bottom: 3px; font-size: 13px; }
     #popup-close { position: absolute; top: 6px; right: 7px; border: 0; background: none; font-size: 20px; cursor: pointer; }
     #attribution { position: absolute; z-index: 5; right: 5px; bottom: 3px; padding: 2px 5px; background: #ffffffe8;
       font-size: 11px; }
@@ -286,11 +311,26 @@ MAP_HTML = r"""<!doctype html>
 <body>
   <header><h1>Campground availability</h1><div id="status">Loading local results…</div></header>
   <main id="layout">
-    <aside id="sidebar"><div id="summary"></div><div id="locations"></div></aside>
+    <aside id="sidebar">
+      <fieldset id="filters">
+        <legend>Dates to display</legend>
+        <div class="date-fields">
+          <label>From <input id="date-from" type="date"></label>
+          <label>Through <input id="date-through" type="date"></label>
+        </div>
+        <div id="presets" aria-label="Date range presets">
+          <button type="button" data-days="7">Next 7 days</button>
+          <button type="button" data-days="30">Next 30 days</button>
+          <button type="button" data-days="all">All results</button>
+        </div>
+      </fieldset>
+      <div id="summary" aria-live="polite"></div><div id="locations"></div>
+    </aside>
     <section id="map" aria-label="Map of campgrounds with availability">
       <div id="tiles"></div><div id="markers"></div>
       <div id="controls"><button id="zoom-in" title="Zoom in">+</button><button id="zoom-out" title="Zoom out">−</button>
-        <button id="fit" title="Fit all watched campgrounds" style="font-size:12px">Fit</button></div>
+        <button id="fit" title="Fit displayed campgrounds" style="font-size:12px">Fit</button></div>
+      <div id="hover-card" role="tooltip" hidden></div>
       <article id="popup"><button id="popup-close" aria-label="Close">×</button><div id="popup-content"></div></article>
       <div id="attribution"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>
         · <a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noopener">Report a map issue</a></div>
@@ -304,12 +344,142 @@ let mapData = null;
 let zoom = 7;
 let center = {lat: 47.6, lon: -122.2};
 let initialized = false;
+let filtersInitialized = false;
+let usingAllDates = true;
+let visibleLocations = [];
 
 const map = document.getElementById("map");
 const tiles = document.getElementById("tiles");
 const markers = document.getElementById("markers");
 const popup = document.getElementById("popup");
 const popupContent = document.getElementById("popup-content");
+const hoverCard = document.getElementById("hover-card");
+const dateFrom = document.getElementById("date-from");
+const dateThrough = document.getElementById("date-through");
+
+function addIsoDays(value, days) {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function dayCount(start, end) {
+  return Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86400000) + 1;
+}
+
+function formatDate(value) {
+  return new Intl.DateTimeFormat(undefined, {month: "short", day: "numeric", year: "numeric", timeZone: "UTC"})
+    .format(new Date(`${value}T00:00:00Z`));
+}
+
+function formatDateRange(run) {
+  return run.display_start === run.display_end
+    ? formatDate(run.display_start)
+    : `${formatDate(run.display_start)} – ${formatDate(run.display_end)}`;
+}
+
+function makeRunTable(runs, limit, moreText) {
+  const container = document.createElement("div");
+  const table = document.createElement("table");
+  table.className = "run-table";
+  table.setAttribute("aria-label", "Available site dates");
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  ["Site", "Available dates", "Nights"].forEach(label => {
+    const cell = document.createElement("th");
+    cell.scope = "col";
+    cell.textContent = label;
+    headRow.appendChild(cell);
+  });
+  head.appendChild(headRow);
+  const body = document.createElement("tbody");
+  runs.slice(0, limit).forEach(run => {
+    const row = document.createElement("tr");
+    const site = document.createElement("td");
+    const dates = document.createElement("td");
+    const nights = document.createElement("td");
+    site.textContent = run.site;
+    dates.textContent = formatDateRange(run);
+    nights.textContent = String(dayCount(run.display_start, run.display_end));
+    row.append(site, dates, nights);
+    body.appendChild(row);
+  });
+  table.append(head, body);
+  container.appendChild(table);
+  if (runs.length > limit) {
+    const more = document.createElement("p");
+    more.className = "more-runs";
+    more.textContent = `+${runs.length - limit} more run(s)${moreText}`;
+    container.appendChild(more);
+  }
+  return container;
+}
+
+function availableBounds() {
+  const runs = (mapData?.locations || []).flatMap(location => location.runs);
+  if (!runs.length) return null;
+  return {
+    first: runs.reduce((value, run) => run.start < value ? run.start : value, runs[0].start),
+    last: runs.reduce((value, run) => run.last_night > value ? run.last_night : value, runs[0].last_night)
+  };
+}
+
+function syncDateControls() {
+  const bounds = availableBounds();
+  if (!bounds) return;
+  dateFrom.min = bounds.first;
+  dateFrom.max = bounds.last;
+  dateThrough.min = bounds.first;
+  dateThrough.max = bounds.last;
+  if (!filtersInitialized || usingAllDates) {
+    dateFrom.value = bounds.first;
+    dateThrough.value = bounds.last;
+    filtersInitialized = true;
+  }
+}
+
+function filterLocation(location) {
+  const first = dateFrom.value;
+  const last = dateThrough.value;
+  const runs = location.runs
+    .filter(run => (!first || run.last_night >= first) && (!last || run.start <= last))
+    .map(run => ({
+      ...run,
+      display_start: first && run.start < first ? first : run.start,
+      display_end: last && run.last_night > last ? last : run.last_night
+    }));
+  if (!runs.length) return null;
+  return {
+    ...location,
+    runs,
+    available_sites: new Set(runs.map(run => run.site)).size,
+    available_runs: runs.length,
+    earliest: runs.reduce((value, run) => run.display_start < value ? run.display_start : value, runs[0].display_start),
+    latest_night: runs.reduce((value, run) => run.display_end > value ? run.display_end : value, runs[0].display_end)
+  };
+}
+
+function filteredLocationList() {
+  return mapData.locations
+    .map(filterLocation)
+    .filter(Boolean)
+    .sort((left, right) => left.earliest.localeCompare(right.earliest) || left.name.localeCompare(right.name));
+}
+
+function bookingUrlFor(location) {
+  const firstRun = location.runs[0];
+  if (!firstRun || !location.key.startsWith("wa:")) return location.booking_url;
+  try {
+    const url = new URL(location.booking_url);
+    if (url.searchParams.has("startDate")) {
+      url.searchParams.set("startDate", firstRun.display_start);
+      url.searchParams.set("endDate", addIsoDays(firstRun.display_end, 1));
+    }
+    return url.href;
+  } catch (error) {
+    return location.booking_url;
+  }
+}
 
 function project(lat, lon, z) {
   const size = TILE_SIZE * (2 ** z);
@@ -364,6 +534,9 @@ function showLocation(location) {
   provider.textContent = location.provider;
   const availability = document.createElement("p");
   availability.textContent = `${location.available_sites} site(s), ${location.available_runs} run(s), ${location.earliest} through ${location.latest_night}`;
+  const runHeading = document.createElement("strong");
+  runHeading.textContent = "Available dates";
+  const runTable = makeRunTable(location.runs, 20, "");
   const distance = document.createElement("p");
   const distanceParts = [];
   if (location.distance_km != null) distanceParts.push(`${location.distance_km} km`);
@@ -371,7 +544,7 @@ function showLocation(location) {
   if (location.est_drive_hrs != null) distanceParts.push(`~${location.est_drive_hrs} h drive`);
   distance.textContent = distanceParts.join(" · ");
   const link = document.createElement("a");
-  link.href = location.booking_url;
+  link.href = bookingUrlFor(location);
   link.target = "_blank";
   link.rel = "noopener";
   link.textContent = "Open booking page";
@@ -382,24 +555,52 @@ function showLocation(location) {
   osm.textContent = "Open location in OpenStreetMap";
   const links = document.createElement("p");
   links.append(link, document.createTextNode(" · "), osm);
-  popupContent.append(title, provider, availability, distance, links);
+  popupContent.append(title, provider, availability, runHeading, runTable, distance, links);
   popup.style.display = "block";
 }
 
+function hideHover() {
+  hoverCard.hidden = true;
+  hoverCard.replaceChildren();
+}
+
+function showHover(location, button) {
+  hoverCard.replaceChildren();
+  const title = document.createElement("strong");
+  title.textContent = location.name;
+  hoverCard.append(title, makeRunTable(location.runs, 5, "; click for details"));
+  const markerX = Number.parseFloat(button.style.left);
+  const markerY = Number.parseFloat(button.style.top);
+  hoverCard.hidden = false;
+  const halfWidth = hoverCard.offsetWidth / 2;
+  hoverCard.style.left = `${Math.max(halfWidth + 12, Math.min(map.clientWidth - halfWidth - 12, markerX))}px`;
+  hoverCard.style.top = `${Math.max(hoverCard.offsetHeight + 12, markerY - 44)}px`;
+}
+
 function renderMarkers() {
+  hideHover();
   markers.replaceChildren();
   if (!mapData) return;
   const origin = viewportOrigin();
-  mapData.locations.forEach((location, index) => {
+  visibleLocations.forEach((location, index) => {
     const point = project(location.lat, location.lon, zoom);
     const button = document.createElement("button");
     button.className = `marker ${location.key.startsWith("rg:") ? "rg" : "wa"}`;
     button.textContent = String(index + 1);
-    button.title = location.name;
-    button.setAttribute("aria-label", location.name);
+    button.setAttribute("aria-label", `${location.name}: ${location.available_sites} sites, ${location.earliest} through ${location.latest_night}`);
+    button.setAttribute("aria-describedby", "hover-card");
     button.style.left = `${point.x - origin.x}px`;
     button.style.top = `${point.y - origin.y}px`;
-    button.addEventListener("click", () => showLocation(location));
+    button.addEventListener("click", () => {
+      hideHover();
+      showLocation(location);
+    });
+    button.addEventListener("pointerenter", () => showHover(location, button));
+    button.addEventListener("pointerleave", () => {
+      if (document.activeElement !== button) hideHover();
+    });
+    button.addEventListener("focus", () => showHover(location, button));
+    button.addEventListener("blur", hideHover);
     markers.appendChild(button);
   });
 }
@@ -408,7 +609,12 @@ function renderMap() { renderTiles(); renderMarkers(); }
 
 function fitAll() {
   if (!mapData) return;
-  const b = mapData.bounds;
+  const b = visibleLocations.length ? {
+    south: Math.min(...visibleLocations.map(location => location.lat)),
+    west: Math.min(...visibleLocations.map(location => location.lon)),
+    north: Math.max(...visibleLocations.map(location => location.lat)),
+    east: Math.max(...visibleLocations.map(location => location.lon))
+  } : mapData.bounds;
   for (let candidate = 12; candidate >= 4; candidate -= 1) {
     const nw = project(b.north, b.west, candidate);
     const se = project(b.south, b.east, candidate);
@@ -433,15 +639,18 @@ function renderSidebar() {
   const list = document.getElementById("locations");
   const summary = document.getElementById("summary");
   list.replaceChildren();
-  summary.textContent = `${mapData.locations.length} campground(s) currently have qualifying availability.`;
-  if (!mapData.locations.length) {
+  const filterDescription = dateFrom.value && dateThrough.value
+    ? ` from ${formatDate(dateFrom.value)} through ${formatDate(dateThrough.value)}`
+    : "";
+  summary.textContent = `${visibleLocations.length} of ${mapData.locations.length} campground(s) have availability${filterDescription}.`;
+  if (!visibleLocations.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = "No qualifying availability is present in last_state.json yet.";
+    empty.textContent = "No qualifying availability overlaps this date range.";
     list.appendChild(empty);
     return;
   }
-  mapData.locations.forEach((location, index) => {
+  visibleLocations.forEach((location, index) => {
     const button = document.createElement("button");
     button.className = "location";
     const name = document.createElement("strong");
@@ -453,6 +662,43 @@ function renderSidebar() {
     button.addEventListener("click", () => focusLocation(location));
     list.appendChild(button);
   });
+}
+
+function renderResults() {
+  if (!mapData) return;
+  visibleLocations = filteredLocationList();
+  popup.style.display = "none";
+  renderSidebar();
+  renderMarkers();
+}
+
+function applyDateFilter(changedInput) {
+  if (dateFrom.value && dateThrough.value && dateFrom.value > dateThrough.value) {
+    if (changedInput === dateFrom) dateThrough.value = dateFrom.value;
+    else dateFrom.value = dateThrough.value;
+  }
+  usingAllDates = false;
+  renderResults();
+}
+
+function applyPreset(days) {
+  const bounds = availableBounds();
+  if (!bounds) return;
+  if (days === "all") {
+    dateFrom.value = bounds.first;
+    dateThrough.value = bounds.last;
+    usingAllDates = true;
+  } else {
+    const today = new Date();
+    const localToday = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    const start = localToday >= bounds.first && localToday <= bounds.last ? localToday : bounds.first;
+    dateFrom.value = start;
+    dateThrough.value = addIsoDays(start, Number(days) - 1) > bounds.last
+      ? bounds.last
+      : addIsoDays(start, Number(days) - 1);
+    usingAllDates = false;
+  }
+  renderResults();
 }
 
 function renderStatus() {
@@ -474,6 +720,8 @@ async function refreshData() {
     mapData = fresh;
     renderStatus();
     if (changed) {
+      syncDateControls();
+      visibleLocations = filteredLocationList();
       renderSidebar();
       if (!initialized) { initialized = true; fitAll(); }
       else renderMarkers();
@@ -487,6 +735,11 @@ document.getElementById("zoom-in").addEventListener("click", () => { zoom = Math
 document.getElementById("zoom-out").addEventListener("click", () => { zoom = Math.max(4, zoom - 1); renderMap(); });
 document.getElementById("fit").addEventListener("click", fitAll);
 document.getElementById("popup-close").addEventListener("click", () => { popup.style.display = "none"; });
+dateFrom.addEventListener("input", () => applyDateFilter(dateFrom));
+dateThrough.addEventListener("input", () => applyDateFilter(dateThrough));
+document.querySelectorAll("#presets button").forEach(button => {
+  button.addEventListener("click", () => applyPreset(button.dataset.days));
+});
 window.addEventListener("resize", () => { if (initialized) renderMap(); });
 refreshData();
 setInterval(refreshData, 5000);

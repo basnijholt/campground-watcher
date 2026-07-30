@@ -81,8 +81,11 @@ a fresh scan.
 `availability_map.py` serves an interactive, loopback-only map and refreshes its
 markers every five seconds as scan checkpoints arrive. Markers represent
 campgrounds with qualifying availability; their cards show the number of distinct
-sites, available date span, distance, and direct booking link. Press Ctrl-C in the
-map server's terminal to stop it.
+sites, available date span, distance, and direct booking link. Hover over or focus
+a map marker to preview the specific site/date runs in a compact table, or click
+it for a longer table. The From/Through fields and 7-day, 30-day, and full-window presets filter
+both the campground list and map markers locally without another provider scan.
+Press Ctrl-C in the map server's terminal to stop it.
 
 The map installs no Python package and loads no third-party JavaScript. While the
 map is open, the browser requests only the visible raster tiles from OpenStreetMap
