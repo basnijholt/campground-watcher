@@ -390,14 +390,41 @@ function formatDateRange(run) {
     : `${formatDate(run.display_start)} – ${formatDate(run.display_end)}`;
 }
 
-function makeRunTable(runs, limit, moreText) {
+function availabilityRows(location) {
+  if (!location.key.startsWith("wa:")) {
+    return location.runs.map(run => ({...run, site_count: 1}));
+  }
+  const grouped = new Map();
+  location.runs.forEach(run => {
+    const key = `${run.display_start}|${run.display_end}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        display_start: run.display_start,
+        display_end: run.display_end,
+        sites: new Set()
+      });
+    }
+    grouped.get(key).sites.add(run.site);
+  });
+  return [...grouped.values()]
+    .map(row => ({...row, site_count: row.sites.size}))
+    .sort((left, right) => left.display_start.localeCompare(right.display_start)
+      || left.display_end.localeCompare(right.display_end));
+}
+
+function makeAvailabilityTable(location, limit, moreText) {
+  const rows = availabilityRows(location);
+  const aggregateSites = location.key.startsWith("wa:");
   const container = document.createElement("div");
   const table = document.createElement("table");
   table.className = "run-table";
-  table.setAttribute("aria-label", "Available site dates");
+  table.setAttribute("aria-label", aggregateSites ? "Available date windows" : "Available site dates");
   const head = document.createElement("thead");
   const headRow = document.createElement("tr");
-  ["Site", "Available dates", "Nights"].forEach(label => {
+  const headings = aggregateSites
+    ? ["Available dates", "Nights", "Sites"]
+    : ["Site", "Available dates", "Nights"];
+  headings.forEach(label => {
     const cell = document.createElement("th");
     cell.scope = "col";
     cell.textContent = label;
@@ -405,23 +432,30 @@ function makeRunTable(runs, limit, moreText) {
   });
   head.appendChild(headRow);
   const body = document.createElement("tbody");
-  runs.slice(0, limit).forEach(run => {
+  rows.slice(0, limit).forEach(run => {
     const row = document.createElement("tr");
-    const site = document.createElement("td");
     const dates = document.createElement("td");
     const nights = document.createElement("td");
-    site.textContent = run.site;
     dates.textContent = formatDateRange(run);
     nights.textContent = String(dayCount(run.display_start, run.display_end));
-    row.append(site, dates, nights);
+    if (aggregateSites) {
+      const sites = document.createElement("td");
+      sites.textContent = String(run.site_count);
+      row.append(dates, nights, sites);
+    } else {
+      const site = document.createElement("td");
+      site.textContent = run.site;
+      row.append(site, dates, nights);
+    }
     body.appendChild(row);
   });
   table.append(head, body);
   container.appendChild(table);
-  if (runs.length > limit) {
+  if (rows.length > limit) {
     const more = document.createElement("p");
     more.className = "more-runs";
-    more.textContent = `+${runs.length - limit} more run(s)${moreText}`;
+    const label = aggregateSites ? "date window(s)" : "run(s)";
+    more.textContent = `+${rows.length - limit} more ${label}${moreText}`;
     container.appendChild(more);
   }
   return container;
@@ -570,10 +604,13 @@ function showLocation(location) {
   const provider = document.createElement("p");
   provider.textContent = location.provider;
   const availability = document.createElement("p");
-  availability.textContent = `${location.available_sites} site(s), ${location.available_runs} run(s), ${location.earliest} through ${location.latest_night}`;
+  const rowCount = availabilityRows(location).length;
+  availability.textContent = location.key.startsWith("wa:")
+    ? `${location.available_sites} site(s) across ${rowCount} date window(s), ${location.earliest} through ${location.latest_night}`
+    : `${location.available_sites} site(s), ${location.available_runs} run(s), ${location.earliest} through ${location.latest_night}`;
   const runHeading = document.createElement("strong");
   runHeading.textContent = "Available dates";
-  const runTable = makeRunTable(location.runs, 20, "");
+  const runTable = makeAvailabilityTable(location, Number.POSITIVE_INFINITY, "");
   const distance = document.createElement("p");
   const distanceParts = [];
   if (location.distance_km != null) distanceParts.push(`${location.distance_km} km`);
@@ -662,7 +699,7 @@ function showHover(location, button, restorePinned = false) {
   });
   actions.append(pinButton, closeButton);
   header.append(title, actions);
-  hoverCard.append(header, makeRunTable(location.runs, 5, "; click the marker for details"));
+  hoverCard.append(header, makeAvailabilityTable(location, 5, "; click the marker for details"));
   const markerX = Number.parseFloat(button.style.left);
   const markerY = Number.parseFloat(button.style.top);
   hoverCard.hidden = false;

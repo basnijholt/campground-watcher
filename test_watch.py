@@ -259,6 +259,7 @@ class AvailabilityMapTests(unittest.TestCase):
         self.assertIn('id="hover-card" role="dialog"', availability_map.MAP_HTML)
         self.assertIn('className = "run-table"', availability_map.MAP_HTML)
         self.assertIn('["Site", "Available dates", "Nights"]', availability_map.MAP_HTML)
+        self.assertIn('["Available dates", "Nights", "Sites"]', availability_map.MAP_HTML)
         self.assertIn('makeCardAction("Pin availability card", "pin")', availability_map.MAP_HTML)
         self.assertIn('makeCardAction("Close availability card", "close")', availability_map.MAP_HTML)
 

@@ -87,6 +87,10 @@ the pushpin icon to keep that preview on screen; the × icon or Escape closes it
 Click the marker itself for a longer table. The From/Through fields and 7-day,
 30-day, and full-window presets filter both the campground list and map markers
 locally without another provider scan.
+
+For Washington State Parks, GoingToCamp supplies opaque internal resource IDs
+instead of useful campsite labels. The map hides those IDs and groups identical
+availability windows, showing the number of sites available for each date range.
 Press Ctrl-C in the map server's terminal to stop it.
 
 The map installs no Python package and loads no third-party JavaScript. While the
