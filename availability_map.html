@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Campground availability map</title>
+  <style>
+    :root { color-scheme: light; font-family: ui-sans-serif, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #17211a; background: #f4f1e8; }
+    header { padding: 14px 18px; background: #193c2b; color: white; }
+    header h1 { margin: 0 0 4px; font-size: 20px; }
+    #status { font-size: 13px; opacity: .9; }
+    #freshness { display: inline-flex; align-items: center; min-height: 24px; margin-top: 7px; padding: 3px 8px;
+      border: 1px solid #94c7a4; border-radius: 999px; background: #16412d; color: #edf8ef; cursor: default; font: inherit; font-size: 12px; font-weight: 650; text-align: left; }
+    #freshness:disabled { opacity: 1; }
+    #freshness.stale { border-color: #f7cf83; background: #5b3b12; color: #fff4dc; }
+    #freshness.stale:not(:disabled) { cursor: copy; }
+    #freshness.stale:not(:disabled):hover, #freshness.stale:not(:disabled):focus-visible { border-color: #fff4dc; outline: 2px solid #f7cf83; outline-offset: 2px; }
+    #layout { display: grid; grid-template-columns: minmax(250px, 340px) 1fr; height: calc(100vh - 72px); }
+    #sidebar { overflow: auto; padding: 12px; border-right: 1px solid #c9c5b8; background: #fffdf7; }
+    #filters { margin: 0 0 12px; padding: 10px; border: 1px solid #d4d0c4; border-radius: 9px; background: #f8f6ef; }
+    #filters legend { padding: 0 4px; font-size: 13px; font-weight: 700; }
+    .date-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .date-fields label { display: grid; gap: 3px; color: #536158; font-size: 11px; font-weight: 650; }
+    .date-fields input { width: 100%; min-width: 0; padding: 6px; border: 1px solid #aaa69b; border-radius: 6px;
+      background: white; color: #17211a; font: inherit; font-size: 12px; }
+    #presets { display: flex; gap: 5px; margin-top: 8px; }
+    #presets button { flex: 1; padding: 5px 3px; border: 1px solid #aaa69b; border-radius: 6px; background: white;
+      color: #284034; cursor: pointer; font-size: 11px; }
+    #presets button:hover, #presets button:focus-visible { border-color: #23704a; outline: 1px solid #23704a; }
+    #summary { font-size: 14px; margin: 2px 2px 12px; }
+    #locations { display: grid; gap: 8px; }
+    .location { width: 100%; text-align: left; border: 1px solid #d4d0c4; border-radius: 9px; padding: 10px;
+      background: white; color: inherit; cursor: pointer; }
+    .location:hover, .location:focus-visible { border-color: #23704a; outline: 2px solid #a9d8bd; }
+    .location strong { display: block; font-size: 14px; }
+    .meta { display: block; margin-top: 4px; color: #536158; font-size: 12px; }
+    #map { position: relative; overflow: hidden; min-height: 420px; background: #dce6dc; cursor: grab; touch-action: none; }
+    #map:focus-visible { outline: 3px solid #1769aa; outline-offset: -3px; }
+    #map.panning, #map.panning * { cursor: grabbing !important; }
+    #tiles, #markers { position: absolute; inset: 0; overflow: hidden; }
+    #tiles img { position: absolute; width: 256px; height: 256px; user-select: none; }
+    .marker { position: absolute; transform: translate(-50%, -100%); width: 30px; height: 38px; border: 0;
+      clip-path: polygon(50% 100%, 5% 42%, 7% 23%, 19% 8%, 36% 1%, 64% 1%, 81% 8%, 93% 23%, 95% 42%);
+      background: #1769aa; color: white; font-weight: 700; cursor: pointer; filter: drop-shadow(0 2px 2px #0007); }
+    .marker:hover, .marker:focus-visible { z-index: 3; scale: 1.14; outline: none; }
+    #controls { position: absolute; z-index: 5; top: 12px; right: 12px; display: grid; gap: 6px; }
+    #controls button { border: 1px solid #777; background: white; border-radius: 6px; min-width: 38px; min-height: 36px;
+      font-size: 18px; cursor: pointer; }
+    #availability-card { position: absolute; z-index: 8; display: flex; flex-direction: column; width: min(430px, calc(100% - 24px));
+      height: min(520px, calc(100% - 24px)); min-width: 290px; min-height: 230px; max-width: calc(100% - 24px); max-height: calc(100% - 24px);
+      padding: 10px; overflow: hidden; resize: both; border: 1px solid #52645a; border-radius: 10px; background: #fffffff2; box-shadow: 0 5px 25px #0004; }
+    #availability-card[hidden] { display: none; }
+    #card-header { display: flex; align-items: center; justify-content: space-between; flex: none; gap: 10px; min-height: 29px; cursor: grab; user-select: none; }
+    #card-header.dragging { cursor: grabbing; }
+    #card-title { min-width: 0; overflow: hidden; color: #17211a; font-size: 17px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+    #card-actions { display: flex; flex: none; gap: 4px; }
+    .card-action { display: grid; place-items: center; width: 29px; height: 29px; padding: 0; border: 1px solid #aaa69b; border-radius: 6px;
+      background: white; color: #294536; cursor: pointer; }
+    .card-action:hover, .card-action:focus-visible { border-color: #23704a; outline: 2px solid #a9d8bd; }
+    .card-action[aria-pressed="true"] { border-color: #193c2b; background: #193c2b; color: white; }
+    .card-action svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    #card-content { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; }
+    #card-content p { margin: 5px 0; font-size: 13px; }
+    #card-content a { color: #075b36; font-weight: 650; }
+    #card-content .card-provider { margin-top: 8px; color: #536158; font-size: 11px; }
+    #card-content .drive-note { margin-top: 1px; color: #536158; font-size: 11px; }
+    .availability-table-block { display: flex; flex: 1; flex-direction: column; min-height: 120px; }
+    .availability-table-block .run-table-shell { flex: 1; max-height: none; }
+    .run-table-shell { max-height: min(390px, 56vh); margin: 8px 0 5px; overflow: auto; overscroll-behavior: contain;
+      border: 1px solid #cbc7bb; border-radius: 8px; background: #fffefa; box-shadow: inset 0 1px #fff; }
+    .run-table { width: 100%; margin: 0; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+    .run-table th, .run-table td { padding: 8px 9px; text-align: left; vertical-align: top; border-bottom: 1px solid #e3dfd4; }
+    .run-table thead th { position: sticky; inset-block-start: 0; z-index: 2; background: #e0ebe3; color: #294536; box-shadow: 0 1px #bccdc1;
+      font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+    .run-table tbody th { width: 1%; color: #203c2c; font-weight: 750; white-space: nowrap; }
+    .run-table tbody tr:nth-child(even) { background: #f7f5ef; }
+    .run-table tbody tr:hover { background: #eaf4ed; }
+    .run-table tbody tr:last-child td, .run-table tbody tr:last-child th { border-bottom: 0; }
+    .stay-options { display: flex; flex-wrap: wrap; gap: 6px; }
+    .stay-chip { display: inline-flex; align-items: center; min-height: 28px; padding: 3px 8px; border: 1px solid #28714c;
+      border-radius: 999px; background: #eaf5ed; color: #075b36; font-weight: 750; line-height: 1.15; text-decoration: none; }
+    .stay-chip:hover, .stay-chip:focus-visible { border-color: #075b36; background: #cfe8d6; outline: 2px solid #a9d8bd; outline-offset: 1px; }
+    .more-runs { margin: 5px 1px 8px; color: #536158; font-size: 11px; }
+    #attribution { position: absolute; z-index: 5; right: 5px; bottom: 3px; padding: 2px 5px; background: #ffffffe8;
+      font-size: 11px; }
+    #attribution a { color: #17472e; }
+    .empty { padding: 20px 8px; color: #536158; }
+    @media (max-width: 760px) {
+      #layout { grid-template-columns: 1fr; grid-template-rows: 38vh 1fr; height: calc(100vh - 72px); }
+      #sidebar { border-right: 0; border-bottom: 1px solid #c9c5b8; }
+      #map { min-height: 340px; }
+    }
+  </style>
+</head>
+<body>
+  <header><h1>Campground availability</h1><div id="status">Loading local results…</div><button type="button" id="freshness" aria-live="polite" disabled></button></header>
+  <main id="layout">
+    <aside id="sidebar">
+      <fieldset id="filters">
+        <legend>Dates to display</legend>
+        <div class="date-fields">
+          <label>From <input id="date-from" type="date"></label>
+          <label>Through <input id="date-through" type="date"></label>
+        </div>
+        <div id="presets" aria-label="Date range presets">
+          <button type="button" data-days="7">Next 7 days</button>
+          <button type="button" data-days="30">Next 30 days</button>
+          <button type="button" data-days="all">All results</button>
+        </div>
+      </fieldset>
+      <div id="summary" aria-live="polite"></div><div id="locations"></div>
+    </aside>
+    <section id="map" aria-label="Map of campgrounds with availability. Drag to pan. Use the mouse wheel, double-click, or zoom buttons to zoom."
+      aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown + - Home" tabindex="0">
+      <div id="tiles"></div><div id="markers"></div>
+      <div id="controls" role="group" aria-label="Map controls"><button type="button" id="zoom-in" aria-label="Zoom in" title="Zoom in (mouse wheel or +)">+</button><button type="button" id="zoom-out" aria-label="Zoom out" title="Zoom out (mouse wheel or −)">−</button>
+        <button type="button" id="fit" aria-label="Fit displayed campgrounds" title="Fit displayed campgrounds (Home)" style="font-size:12px">Fit</button></div>
+      <aside id="availability-card" role="dialog" aria-modal="false" aria-label="Campground availability" hidden>
+        <div id="card-header"><strong id="card-title"></strong><div id="card-actions">
+          <button type="button" class="card-action" id="card-pin" aria-label="Pin availability card" aria-pressed="false" title="Pin availability card"></button>
+          <button type="button" class="card-action" id="card-close" aria-label="Close availability card" title="Close availability card"></button>
+        </div></div><div id="card-content"></div>
+      </aside>
+      <div id="attribution"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>
+        · <a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noopener">Report a map issue</a></div>
+    </section>
+  </main>
+<script src="/availability_map.js" defer></script>
+</body>
+</html>

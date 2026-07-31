@@ -40,15 +40,17 @@ a timer. It installs nothing and uses only the Python standard library.
 ## Quick start
 
 ```bash
-# 1. Set your home location (used to compute distance to each campground)
-export CAMPWATCH_HOME_LAT=47.6062     # your latitude
-export CAMPWATCH_HOME_LON=-122.3321   # your longitude
+# 1. Set your home location (used to compute distance to each campground).
+# Replace these placeholders with your own coordinates before running a rebuild.
+export CAMPWATCH_HOME_LAT=YOUR_LATITUDE
+export CAMPWATCH_HOME_LON=YOUR_LONGITUDE
 
 # 2. (Optional) regenerate the candidate lists for YOUR area:
 ./build_candidates.py   # private default: local 90 km distance filtering
 ./build_wa_parks.py     # WA + Tacoma Power parks within an estimated ~2h drive
 #    -> these write candidates.json / wa_parks.json, which feed watch_config.json.
-#    (Shipped JSON files are tuned for the Seattle area; rebuild for elsewhere.)
+#    (Shipped JSON files use a fictional demonstration origin; rebuild for your area.)
+python3 watch.py --rebuild-config  # rebuild watch_config.json from those lists
 
 # 3. Create your private trip-date file (it is ignored by Git)
 cp watch_targets.example.json watch_targets.json
@@ -69,30 +71,48 @@ python3 availability_map.py --open
 ```
 
 Long scans checkpoint `last_state.json` atomically after every campground and
-print `[completed/total]` progress. While a scan is running or if it stops early,
-the report commands warn that unprocessed campgrounds still show their previous
-results. Alert comparisons use a separate last-complete baseline, so an
-interrupted incremental scan cannot suppress an alert on the next run. Restarting
-the same date window and configuration resumes from the checkpoint and skips
-campground IDs already completed; a date, filter, or configuration change starts
-a fresh scan.
+print `[completed/total]` progress. Availability requests run concurrently, but
+with conservative independent caps: three recreation.gov workers and two
+GoingToCamp workers. Each provider also has a shared request-start pacer; an
+HTTP 429 pauses all pending workers for that provider before its next request.
+While a scan is running or if it stops early, the report commands warn that
+unprocessed campgrounds still show their previous results. Alert comparisons use
+a separate last-complete baseline, so an interrupted incremental scan cannot
+suppress an alert on the next run. Restarting the same date window and
+configuration resumes from the checkpoint and skips campground IDs already
+completed; a date, filter, or configuration change starts a fresh scan.
 
 ### Availability map
 
-`availability_map.py` serves an interactive, loopback-only map and refreshes its
-markers every five seconds as scan checkpoints arrive. Markers represent
-campgrounds with qualifying availability; their one floating detail card shows
-the number of distinct sites, available date span, distance, and direct booking
-links. Hover or focus a marker to open the full scrollable card, then use its pin
-button to keep it open. The card can be dragged by its header and resized from
-its lower-right corner; × or Escape closes it. Selecting a marker or a campground
-in the list opens and pins the same card. The From/Through fields and 7-day,
-30-day, and full-window presets filter both the campground list and map markers
-locally without another provider scan.
+`availability_map.py` serves an interactive, loopback-only map. While a map tab
+is open, it holds one same-origin event stream to the local map server. The
+server watches the atomic scan checkpoint files: a checkpoint-only change updates
+the status line, while a changed availability fingerprint causes one full map-data
+fetch and marker/list update. It does not repeatedly fetch unchanged availability
+data. Markers represent campgrounds with qualifying availability; their one
+floating detail card shows the number of distinct sites, available date span,
+distance, and direct booking links. Hover or focus a marker to open the full
+scrollable card, then use its pin button to keep it open. The card can be dragged
+by its header and resized from its lower-right corner; × or Escape closes it.
+Selecting a marker or a campground in the list opens and pins the same card. The
+From/Through fields and 7-day, 30-day, and full-window presets filter both the
+campground list and map markers locally without another provider scan.
+Drag an empty part of the map to pan. Hover the map and use the mouse wheel or
+double-click to zoom; the +/− controls work too. When the map has keyboard focus,
+the arrow keys pan, +/− zoom, and Home fits the currently displayed campgrounds.
 Long availability tables scroll inside the card while keeping the campground name
 and column headers visible. Results are grouped by check-in day: each compact,
 directly-bookable stay chip shows its nights and available-site count. The status
 bar reports a warning whenever scan data has not changed for more than one hour.
+It also reports when the local event stream disconnects and reconnects
+automatically after the map server is restarted. When a scan is marked failed, or
+has been running without a checkpoint for five minutes, the refresh badge becomes
+actionable immediately. Click it to copy `python3 watch.py --all-once`, then run
+the copied command in the project directory to refresh or resume saved
+availability. A completed checkpoint never suppresses that full new scan; an
+interrupted scan instead resumes safely from its partial checkpoint. Returning to
+a backgrounded map tab performs one catch-up fetch in case the browser missed an
+event.
 
 For Washington State Parks, GoingToCamp supplies opaque internal resource IDs
 instead of useful campsite labels. The map hides those IDs and groups identical
@@ -115,7 +135,8 @@ local 90 km validation and report distances explicitly in kilometers and miles:
 ```bash
 ./build_candidates.py --distance-filter client  # default; coordinates stay local
 ./build_candidates.py --distance-filter server  # faster; sends coordinates to recreation.gov
-./build_candidates.py --distance-filter drive   # OSM road-distance cutoff; no rec.gov proximity query
+./build_candidates.py --distance-filter drive   # OSM road-distance/time cutoff; no rec.gov proximity query
+./build_wa_parks.py --distance-filter drive     # OSM road-distance/time for WA + Tacoma Power cards
 ./build_candidates.py --max-distance-km 120      # optional explicit km cutoff
 ```
 
@@ -124,14 +145,19 @@ returned `distance` values as kilometers and receives the configured coordinates
 Driving mode is deliberately incompatible with server mode: it fetches the
 statewide catalog, then sends your home coordinate and candidate coordinates in
 small batches to the public OpenStreetMap OSRM routing service to compute road
-distance. It uses no extra package, but does disclose those coordinates and your
-IP address to that service; use the default client mode if that is not acceptable.
+distance and the profile's traffic-free route duration. It uses no extra package,
+but does disclose those coordinates and your IP address to that service; use the
+default client mode if that is not acceptable.
 The service is best-effort and rate-limited, so use driving mode only for an
 occasional candidate-list rebuild rather than a scheduled task.
 The generated JSON lists contain distances derived from your home location, so
 review them before committing; the checked-in lists use the public Seattle example.
 `build_wa_parks.py` estimates drive time from straight-line distance, a regional
 road-distance factor, and an average speed; it is not a routing-based cutoff.
+Pass `--distance-filter drive` to that command too when you want the map to show
+OpenStreetMap/OSRM route times instead for every provider. The map labels OSM
+times as route estimates with no live traffic; otherwise it labels the local
+WA/Tacoma Power park-list estimate rather than attributing it to the parks.
 
 ## Configuration
 
@@ -139,13 +165,30 @@ Secrets and trip dates stay out of source code. Environment settings are:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CAMPWATCH_HOME_LAT` / `CAMPWATCH_HOME_LON` | Seattle | Your home coordinates for distance filtering. |
+| `CAMPWATCH_HOME_LAT` / `CAMPWATCH_HOME_LON` | Required | Your home coordinates for distance filtering; there is no embedded location fallback. |
 | `CAMPWATCH_WEBHOOK_URL` | *(none)* | Where to POST notifications (see below). If unset, openings are only written to `alerts.jsonl`. |
 | `CAMPWATCH_WEBHOOK_TEXT_KEY` | `content` | JSON key for the human-readable text. `content` for Discord, `text` for Slack, `message` for ntfy. |
 | `CAMPWATCH_NOTIFY` | `1` | Set to `0` to disable notifications entirely. |
 | `CAMPWATCH_ALLOW_PRIVATE_WEBHOOK` | `0` | Set to `1` only when intentionally posting to a private/local HTTPS server. |
 | `CAMPWATCH_LOG_MAX_BYTES` | `2097152` | Rotate the scheduled log at this size. |
 | `CAMPWATCH_LOG_BACKUPS` | `4` | Number of old scheduled logs to retain. |
+| `CAMPWATCH_RECGOV_WORKERS` | `3` | Concurrent recreation.gov campground polls; bounded to 1–4. |
+| `CAMPWATCH_GTC_WORKERS` | `2` | Concurrent GoingToCamp park polls; bounded to 1–3. |
+
+The defaults are intentionally modest because neither availability provider
+publishes a usable rate-limit contract for these public endpoints. If a provider
+starts returning HTTP 429 or WAF errors, lower the relevant value to `1`; the
+watcher preserves the last known result for that failed target and prints the
+HTTP status in its progress warning. Values above the documented caps are
+clamped rather than creating a high-volume scan.
+
+### Provider rules
+
+[`provider_rules.json`](provider_rules.json) holds the editable, non-secret
+data behind regional discovery: provider display labels, the campground and
+group-site name markers, candidate rating/distance defaults, and the local WA
+drive-estimation heuristic. This keeps policy/data out of Python while retaining
+the provider HTTPS allowlists and API schemas in code as a security boundary.
 
 For a scheduled job, webhook settings can instead live in the Git-ignored
 `secrets/config.json` file. The runner refuses to read it unless it has mode 600:
@@ -284,8 +327,11 @@ scheduler interval.
 |---|---|
 | `watch.py` | The watcher. Polls, filters, diffs against last state, notifies. |
 | `availability_map.py` | Loopback-only live OpenStreetMap view of available campgrounds. |
+| `availability_map.html` | Static markup and styles for the loopback map page. |
+| `availability_map.js` | First-party browser behavior served only by the loopback map server. |
 | `campwatch_config.py` | Safely loads owner-only, Git-ignored local settings. |
 | `campwatch_http.py` | Size-limited, allow-listed standard-library HTTPS clients. |
+| `provider_rules.json` | Editable regional labels and filtering/drive-estimation rules. |
 | `watch_config.json` | The list of campgrounds to watch (recreation.gov + WA). |
 | `watch_targets.json` | Private, ignored trip dates (created by you). |
 | `watch_targets.example.json` | Safe empty template for trip dates. |

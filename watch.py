@@ -16,6 +16,7 @@ State Parks list.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import datetime as dt
 import hashlib
 import ipaddress
@@ -23,16 +24,19 @@ import json
 import os
 import socket
 import sys
+import threading
 import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from campwatch_config import load_provider_rules
 from campwatch_http import (
     GTC_HOSTS,
     GoingToCampClient,
     HttpRequestError,
+    RequestPacer,
     RecreationGovClient,
     atomic_write_json,
 )
@@ -69,6 +73,7 @@ _GTC_OCCUPANCY_AVAILABLE = 0
 # Per-rec-area caches so we hit the metadata endpoints once.
 _booking_categories_cache: dict = {}
 _sub_equipment_cache: dict = {}
+_gtc_metadata_cache_lock = threading.Lock()
 
 
 class AvailabilityVerificationError(RuntimeError):
@@ -84,10 +89,14 @@ def _rootmap_index(client, rec_area_id):
 
 
 def _booking_category(client, rec_area_id, booking_category_id=0):
-    if rec_area_id not in _booking_categories_cache:
-        _booking_categories_cache[rec_area_id] = client.request_json(
-            rec_area_id, "BOOKING_CATEGORIES"
-        )
+    # Worker threads share this small per-provider cache.  Keep the first
+    # metadata fetch single-flight so parallel park scans do not create an
+    # avoidable burst of identical requests.
+    with _gtc_metadata_cache_lock:
+        if rec_area_id not in _booking_categories_cache:
+            _booking_categories_cache[rec_area_id] = client.request_json(
+                rec_area_id, "BOOKING_CATEGORIES"
+            )
     for cat in _booking_categories_cache[rec_area_id]:
         if cat.get("bookingCategoryId") == booking_category_id:
             return cat
@@ -103,18 +112,19 @@ def _people_capacity_counts(client, rec_area_id, booking_category_id=0, party_si
 
 
 def _default_sub_equipment(client, rec_area_id):
-    if rec_area_id not in _sub_equipment_cache:
-        cats = client.request_json(rec_area_id, "LIST_EQUIPMENT")
-        non_group = next(
-            (c for c in cats if c.get("equipmentCategoryId") == NON_GROUP_EQUIPMENT),
-            None,
-        )
-        sub = None
-        if non_group:
-            subs = non_group.get("subEquipmentCategories") or []
-            if subs:
-                sub = subs[0].get("subEquipmentCategoryId")
-        _sub_equipment_cache[rec_area_id] = sub
+    with _gtc_metadata_cache_lock:
+        if rec_area_id not in _sub_equipment_cache:
+            cats = client.request_json(rec_area_id, "LIST_EQUIPMENT")
+            non_group = next(
+                (c for c in cats if c.get("equipmentCategoryId") == NON_GROUP_EQUIPMENT),
+                None,
+            )
+            sub = None
+            if non_group:
+                subs = non_group.get("subEquipmentCategories") or []
+                if subs:
+                    sub = subs[0].get("subEquipmentCategoryId")
+            _sub_equipment_cache[rec_area_id] = sub
     return _sub_equipment_cache[rec_area_id]
 
 
@@ -270,6 +280,18 @@ PING_SUPPRESS_HOURS = 24
 WINDOW_DAYS = 90
 MIN_NIGHTS = 2
 
+# Conservative caps give I/O overlap without imitating a high-volume scraper.
+# Separate pools prevent a slow or throttled provider from blocking the other.
+REC_GOV_DEFAULT_WORKERS = 3
+GTC_DEFAULT_WORKERS = 2
+REC_GOV_MAX_WORKERS = 4
+GTC_MAX_WORKERS = 3
+# These retain the rough request-start rate the prior sequential scanner reached
+# on a healthy connection, while capping in-flight work and leaving headroom for
+# the shared 429 cooldown.
+REC_GOV_REQUEST_INTERVAL_SECONDS = 0.125
+GTC_REQUEST_INTERVAL_SECONDS = 0.25
+
 # ---- instant notifications via a generic webhook ----
 # On each new occupancy-verified opening, POST a JSON payload to an optional
 # webhook URL. Set CAMPWATCH_WEBHOOK_URL to a Discord/Slack/ntfy/Telegram/
@@ -278,11 +300,40 @@ MIN_NIGHTS = 2
 # weekend.py). Change-only + idempotent + fails soft; never raises.
 NOTIFY_ENABLED = os.environ.get("CAMPWATCH_NOTIFY", "1") != "0"
 WEBHOOK_URL = os.environ.get("CAMPWATCH_WEBHOOK_URL", "")
+
+
+def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    """Read a small, safe worker-count override from the environment."""
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return min(max(value, minimum), maximum)
+
+
+def availability_worker_counts() -> tuple[int, int]:
+    """Return independently capped recreation.gov and GoingToCamp workers."""
+    return (
+        _bounded_env_int(
+            "CAMPWATCH_RECGOV_WORKERS",
+            REC_GOV_DEFAULT_WORKERS,
+            1,
+            REC_GOV_MAX_WORKERS,
+        ),
+        _bounded_env_int(
+            "CAMPWATCH_GTC_WORKERS",
+            GTC_DEFAULT_WORKERS,
+            1,
+            GTC_MAX_WORKERS,
+        ),
+    )
+
+
 # Optional: send the human-readable text under this JSON key (Discord uses
 # "content", Slack uses "text", ntfy uses "message"). Default "content".
 WEBHOOK_TEXT_KEY = os.environ.get("CAMPWATCH_WEBHOOK_TEXT_KEY", "content")
 
-GROUP_MARKERS = ("GROUP", "GRP", "HORSE CAMP", "GROUP SITE", "GROUP CAMP", "OVERFLOW")
+GROUP_MARKERS = load_provider_rules()["watch"]["group_markers"]
 
 # ---- private target-weekend filter ------------------------------------------
 # watch_targets.json is intentionally ignored by Git so future travel dates do
@@ -791,6 +842,41 @@ def recgov_available_nights(client, campground_id, start, end):
     return by_site
 
 
+def _recgov_target_result(campground: dict, start: dt.date, end: dt.date, pacer):
+    """Poll one recreation.gov target with a thread-local HTTP client."""
+    try:
+        return recgov_available_nights(
+            RecreationGovClient(pacer=pacer), campground["id"], start, end
+        ), None
+    except Exception as exc:  # noqa: BLE001 - individual targets fail closed
+        return None, exc
+
+
+def _gtc_target_result(campground: dict, start: dt.date, end: dt.date, pacer):
+    """Poll one GoingToCamp target with a thread-local HTTP client."""
+    if campground.get("root_map_id") is None:
+        # Non-campground facility (no reservable map); nothing to watch.
+        return None, None
+    try:
+        return gtc_available_nights(
+            campground["rec_area"],
+            campground["id"],
+            start,
+            end,
+            root_map_id=campground.get("root_map_id"),
+            client=GoingToCampClient(pacer=pacer),
+        ), None
+    except Exception as exc:  # noqa: BLE001 - individual targets fail closed
+        return None, exc
+
+
+def _http_error_label(exc: Exception) -> str:
+    """Keep progress warnings brief while retaining a provider status code."""
+    if isinstance(exc, HttpRequestError) and exc.status is not None:
+        return f"{type(exc).__name__} HTTP {exc.status}"
+    return type(exc).__name__
+
+
 def _summary_from_state(cfg: dict, state: dict, previous: dict):
     """Rebuild human/alert details so resumed targets need not be polled again."""
     summary = []
@@ -892,8 +978,13 @@ def main(*, scheduled: bool = False):
     # checkpoints update STATE_FILE only, so an interrupted scan cannot consume
     # openings that still need to be alerted on the next complete run.
     prev_state = _load_complete_state()
-    rec_client = RecreationGovClient()
-    gtc_client = GoingToCampClient()
+    rec_workers, gtc_workers = availability_worker_counts()
+    # Each target task gets its own client because urllib's cookie jar/opener
+    # is not a shared-thread transport.  The pacer is shared per upstream
+    # provider so request starts stay modest and a 429 slows every worker for
+    # that provider.
+    rec_pacer = RequestPacer(REC_GOV_REQUEST_INTERVAL_SECONDS)
+    gtc_pacer = RequestPacer(GTC_REQUEST_INTERVAL_SECONDS)
     total_targets = len(cfg["recdotgov"]) + len(cfg["going_to_camp"])
     signature = _scan_signature(cfg, start, end)
     completed_keys, new_state = _load_resume_checkpoint(signature)
@@ -947,42 +1038,91 @@ def main(*, scheduled: bool = False):
         new_state[key] = sorted(run_keys)
 
     try:
-        # --- recreation.gov ---
-        for cg in cfg["recdotgov"]:
-            cid = cg["id"]
-            key = f"rg:{cid}"
-            if key in completed_key_set:
-                continue
-            try:
-                by_site = recgov_available_nights(rec_client, cid, start, end)
-            except Exception as exc:  # noqa: BLE001
-                log(f"  WARN rec.gov #{cid} {cg['name']}: {type(exc).__name__}")
-                new_state[key] = prev_state.get(key, [])
-            else:
-                process(key, by_site)
-            checkpoint(key, cg["name"])
+        rec_pending = [
+            cg for cg in cfg["recdotgov"]
+            if f"rg:{cg['id']}" not in completed_key_set
+        ]
+        if rec_pending:
+            log(
+                f"  Fetching recreation.gov with {rec_workers} worker(s) "
+                f"({REC_GOV_REQUEST_INTERVAL_SECONDS:.2f}s minimum request spacing)."
+            )
 
-        # --- Washington State Parks (GoingToCamp, direct MAPDATA) ---
-        for cg in cfg["going_to_camp"]:
+        gtc_pending = [
+            cg for cg in cfg["going_to_camp"]
+            if f"wa:{cg['id']}" not in completed_key_set
+        ]
+        # Retain the prior state for non-campground facilities without sending
+        # any request.  This preserves the sequential scan's behavior.
+        for cg in [item for item in gtc_pending if item.get("root_map_id") is None]:
             fid = cg["id"]
             key = f"wa:{fid}"
-            if key in completed_key_set:
-                continue
-            if cg.get("root_map_id") is None:
-                # Non-campground facility (no reservable map); nothing to watch.
-                new_state[key] = prev_state.get(key, [])
-            else:
-                try:
-                    by_site = gtc_available_nights(
-                        cg["rec_area"], fid, start, end,
-                        root_map_id=cg.get("root_map_id"), client=gtc_client,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    log(f"  WARN WA park {cg['name']} ({fid}): {type(exc).__name__}")
-                    new_state[key] = prev_state.get(key, [])
-                else:
-                    process(key, by_site)
+            new_state[key] = prev_state.get(key, [])
             checkpoint(key, cg["name"])
+
+        gtc_network_pending = [
+            item for item in gtc_pending if item.get("root_map_id") is not None
+        ]
+        if gtc_network_pending:
+            log(
+                f"  Fetching GoingToCamp with {gtc_workers} worker(s) "
+                f"({GTC_REQUEST_INTERVAL_SECONDS:.2f}s minimum request spacing)."
+            )
+
+        # The pools run together, but each has an independent worker cap and
+        # request pacer.  A worker returns its data to this main thread, which
+        # keeps checkpoints and state writes atomic and ordered.
+        if rec_pending or gtc_network_pending:
+            with (
+                ThreadPoolExecutor(
+                    max_workers=rec_workers, thread_name_prefix="recgov"
+                ) as rec_pool,
+                ThreadPoolExecutor(
+                    max_workers=gtc_workers, thread_name_prefix="goingtocamp"
+                ) as gtc_pool,
+            ):
+                futures = {
+                    rec_pool.submit(
+                        _recgov_target_result, cg, start, end, rec_pacer
+                    ): ("recgov", cg)
+                    for cg in rec_pending
+                }
+                futures.update(
+                    {
+                        gtc_pool.submit(
+                            _gtc_target_result, cg, start, end, gtc_pacer
+                        ): ("goingtocamp", cg)
+                        for cg in gtc_network_pending
+                    }
+                )
+                while futures:
+                    completed, _ = wait(futures, return_when=FIRST_COMPLETED)
+                    for future in completed:
+                        provider, cg = futures.pop(future)
+                        by_site, error = future.result()
+                        if provider == "recgov":
+                            cid = cg["id"]
+                            key = f"rg:{cid}"
+                            if error is not None:
+                                log(
+                                    f"  WARN rec.gov #{cid} {cg['name']}: "
+                                    f"{_http_error_label(error)}"
+                                )
+                                new_state[key] = prev_state.get(key, [])
+                            else:
+                                process(key, by_site)
+                        else:
+                            fid = cg["id"]
+                            key = f"wa:{fid}"
+                            if error is not None:
+                                log(
+                                    f"  WARN WA park {cg['name']} ({fid}): "
+                                    f"{_http_error_label(error)}"
+                                )
+                                new_state[key] = prev_state.get(key, [])
+                            else:
+                                process(key, by_site)
+                        checkpoint(key, cg["name"])
     except BaseException:
         _write_scan_progress(
             status="failed",
@@ -1050,7 +1190,19 @@ if __name__ == "__main__":
             action="store_true",
             help="scan all qualifying openings once without changing private targets",
         )
+        parser.add_argument(
+            "--rebuild-config",
+            action="store_true",
+            help="rebuild watch_config.json from the generated candidate lists",
+        )
         args = parser.parse_args()
+        if args.rebuild_config:
+            cfg = build_config()
+            print(
+                f"Rebuilt watch_config.json with {len(cfg['recdotgov'])} rec.gov and "
+                f"{len(cfg['going_to_camp'])} WA campground(s)."
+            )
+            sys.exit(0)
         if args.all_once:
             TARGET_WEEKENDS = None
         sys.exit(main(scheduled=args.scheduled))

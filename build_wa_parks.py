@@ -3,41 +3,33 @@
 Tacoma Power rec-area 6) that are within ~2 hours' drive of home, with their
 gpsCoordinates and rootMapId.
 
-No paid API. Drive-time is estimated as crow-flies km * ROAD_FACTOR / AVG_KMH.
-Borderline parks (within DRIVE_HRS + MARGIN) are kept and flagged so we don't
-miss anything near the cutoff. Day-use-only / non-campground facilities are
-dropped via a name + resource-category heuristic.
+By default, drive time is estimated as crow-flies km * ROAD_FACTOR / AVG_KMH.
+``--distance-filter drive`` adds an explicit OpenStreetMap OSRM route distance
+and traffic-free route duration for every retained park. Borderline parks
+(within DRIVE_HRS + MARGIN) are kept and flagged so we don't miss anything near
+the cutoff. Day-use-only / non-campground facilities are dropped via a name +
+resource-category heuristic.
 
 Writes wa_parks.json consumed by watch.py.
 """
 from __future__ import annotations
 
+import argparse
 import math
 from pathlib import Path
 
-from campwatch_config import local_environment
-from campwatch_http import GoingToCampClient, atomic_write_json
+from campwatch_config import home_coordinates, load_provider_rules, local_environment
+from campwatch_http import GoingToCampClient, OsmDrivingRouter, atomic_write_json
 
-LOCAL_ENV = local_environment()
-HOME_LAT = float(LOCAL_ENV.get("CAMPWATCH_HOME_LAT", "47.6062"))
-HOME_LON = float(LOCAL_ENV.get("CAMPWATCH_HOME_LON", "-122.3321"))
-DRIVE_HRS = 2.0
-MARGIN_HRS = 0.25  # keep borderline parks just over the line, flagged
-ROAD_FACTOR = 1.35  # crow-flies -> road distance multiplier (PNW mountains)
-AVG_KMH = 75.0  # mixed highway/mountain average speed
-
-REC_AREAS = {3: "Washington State Parks", 6: "Tacoma Power Parks"}
-
-# Names that are clearly NOT overnight campgrounds (trails, day-use, offices,
-# marine/boat-in handled separately). Heuristic only; availability check is the
-# final arbiter (these return zero campsites anyway).
-NON_CAMP_MARKERS = (
-    "TRAIL", "OFFICE", "REGION", "OBSERVATORY", "OBA", "HERITAGE",
-    "INTERPRETIVE", "DAY USE", "DAY-USE", "GEYSER",
-    "RETREAT CENTER", "VISITORS CENTER", "VISITOR CENTER", "FRONT DESK",
-    "INFORMATION CENTER", "INTERNET", "HQ", "CAMPUS OPERATIONS", "DEPOT",
-    "PROPERTY", " IC", "WESTHAVEN", "PALOUSE TO CASCADES",
-)
+RULES = load_provider_rules()
+GOING_TO_CAMP_RULES = RULES["going_to_camp"]
+DRIVE_RULES = GOING_TO_CAMP_RULES["estimated_drive"]
+DRIVE_HRS = DRIVE_RULES["max_hours"]
+MARGIN_HRS = DRIVE_RULES["margin_hours"]
+ROAD_FACTOR = DRIVE_RULES["road_factor"]
+AVG_KMH = DRIVE_RULES["average_kmh"]
+REC_AREAS = GOING_TO_CAMP_RULES["rec_areas"]
+NON_CAMP_MARKERS = GOING_TO_CAMP_RULES["non_camp_markers"]
 
 HERE = Path(__file__).parent
 OUT = HERE / "wa_parks.json"
@@ -60,7 +52,43 @@ def parse_gps(s):
         return None, None
 
 
-def main():
+def attach_osm_route_times(
+    parks: list[dict], router: OsmDrivingRouter, *, home_lat: float, home_lon: float
+) -> tuple[list[dict], int]:
+    """Add OSM road duration, retaining parks that have no drivable route."""
+    routes = router.driving_routes(
+        home_lat, home_lon, [(park["lat"], park["lon"]) for park in parks]
+    )
+    if len(routes) != len(parks):
+        raise RuntimeError("routing response did not match the park list")
+    unavailable = 0
+    for park, (distance_km, duration_seconds) in zip(parks, routes):
+        if distance_km is None or duration_seconds is None:
+            # Keep the campground/watch target intact. The map can explain that
+            # OSRM did not return a drivable route instead of silently hiding it.
+            park["osrm_route_unavailable"] = True
+            unavailable += 1
+            continue
+        park["distance_km"] = round(distance_km, 1)
+        park["dist_mi"] = round(distance_km / 1.609344, 1)
+        park["osrm_duration_seconds"] = round(duration_seconds)
+        park["drive_time_source"] = "openstreetmap_osrm"
+    return parks, unavailable
+
+
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--distance-filter",
+        choices=("client", "drive"),
+        default="client",
+        help=(
+            "client keeps the local heuristic (default); drive sends coordinates "
+            "to OpenStreetMap OSRM for route distance and duration"
+        ),
+    )
+    args = parser.parse_args(argv)
+    home_lat, home_lon = home_coordinates(local_environment())
     g = GoingToCampClient()
     kept, dropped_far, dropped_noncamp, no_coords = [], [], [], []
     for rec_area_id, label in REC_AREAS.items():
@@ -84,7 +112,7 @@ def main():
                 # No GPS = admin/non-campground facility in practice. Drop.
                 no_coords.append(name)
                 continue
-            crow = haversine_km(HOME_LAT, HOME_LON, lat, lon)
+            crow = haversine_km(home_lat, home_lon, lat, lon)
             est_hrs = crow * ROAD_FACTOR / AVG_KMH
             if est_hrs > DRIVE_HRS + MARGIN_HRS:
                 dropped_far.append((name, round(est_hrs, 2)))
@@ -104,15 +132,34 @@ def main():
                 }
             )
 
-    kept.sort(key=lambda c: (c["est_drive_hrs"] is None, c["est_drive_hrs"] or 0))
+    dropped_unrouteable = 0
+    if args.distance_filter == "drive":
+        kept, dropped_unrouteable = attach_osm_route_times(
+            kept, OsmDrivingRouter(), home_lat=home_lat, home_lon=home_lon
+        )
+        kept.sort(
+            key=lambda c: (
+                c.get("osrm_duration_seconds") is None,
+                c.get("osrm_duration_seconds") or float("inf"),
+            )
+        )
+    else:
+        kept.sort(key=lambda c: (c["est_drive_hrs"] is None, c["est_drive_hrs"] or 0))
     atomic_write_json(OUT, kept, mode=0o644)
     print(f"KEPT {len(kept)} WA parks within ~{DRIVE_HRS}h (+{MARGIN_HRS}h margin)")
     print(f"  dropped (too far): {len(dropped_far)}")
     print(f"  dropped (non-campground): {len(dropped_noncamp)}")
     print(f"  dropped (no coordinates): {len(no_coords)}")
+    if args.distance_filter == "drive":
+        print(f"  no OSM road route (retained and marked): {dropped_unrouteable}")
     print()
     for c in kept:
-        h = f"{c['est_drive_hrs']}h" if c["est_drive_hrs"] is not None else "  ?  "
+        if args.distance_filter == "drive" and c.get("osrm_duration_seconds") is not None:
+            h = f"{c['osrm_duration_seconds'] / 3600:.2f}h OSM"
+        elif args.distance_filter == "drive":
+            h = "no OSM route"
+        else:
+            h = f"{c['est_drive_hrs']}h" if c["est_drive_hrs"] is not None else "  ?  "
         flag = " *borderline" if c["borderline"] else ""
         print(f"  {h:>6}  {c['name']}{flag}")
 

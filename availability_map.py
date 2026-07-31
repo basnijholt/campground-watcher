@@ -11,6 +11,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import time
 import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +27,39 @@ STATE = HERE / "last_state.json"
 PROGRESS = HERE / "scan_progress.json"
 CANDIDATES = HERE / "candidates.json"
 WA_PARKS = HERE / "wa_parks.json"
+MAP_HTML = (HERE / "availability_map.html").read_text(encoding="utf-8")
+MAP_JS = (HERE / "availability_map.js").read_text(encoding="utf-8")
+
+# The map only watches its local, atomically-written source files while a
+# browser has an event-stream connection open.  This avoids a background timer
+# repeatedly transferring the full availability payload to every open map tab.
+EVENT_POLL_SECONDS = 0.25
+EVENT_DEBOUNCE_SECONDS = 0.10
+EVENT_HEARTBEAT_SECONDS = 15.0
+EVENT_RETRY_MILLISECONDS = 2_000
+
+
+def _fingerprint(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+
+
+def _file_revision(path: Path) -> tuple[int, int, int] | None:
+    """Return a cheap change token without reading a watched file."""
+    try:
+        stat = path.stat()
+        return stat.st_ino, stat.st_size, stat.st_mtime_ns
+    except OSError:
+        return None
+
+
+def _source_revisions() -> tuple[tuple[int, int, int] | None, ...]:
+    """Tokenize every local input that could alter map data."""
+    return tuple(
+        _file_revision(path)
+        for path in (CONFIG, STATE, PROGRESS, CANDIDATES, WA_PARKS)
+    )
 
 
 def _load_json(path: Path, default: Any) -> Any:
@@ -98,6 +132,12 @@ def _location_record(
     booking_url: str,
 ) -> dict:
     sites = {run["site"] for run in runs}
+    osrm_duration_seconds = campground.get("osrm_duration_seconds")
+    if osrm_duration_seconds is None:
+        osrm_duration_seconds = metadata.get("osrm_duration_seconds")
+    osrm_route_unavailable = campground.get("osrm_route_unavailable")
+    if osrm_route_unavailable is None:
+        osrm_route_unavailable = metadata.get("osrm_route_unavailable")
     return {
         "key": key,
         "name": campground.get("name") or metadata.get("name") or key,
@@ -107,7 +147,9 @@ def _location_record(
         "rating": campground.get("rating"),
         "distance_km": campground.get("distance_km") or metadata.get("distance_km"),
         "distance_mi": campground.get("dist_mi") or metadata.get("dist_mi"),
-        "est_drive_hrs": campground.get("est_drive_hrs"),
+        "est_drive_hrs": campground.get("est_drive_hrs") or metadata.get("est_drive_hrs"),
+        "osrm_duration_seconds": osrm_duration_seconds,
+        "osrm_route_unavailable": osrm_route_unavailable is True,
         "available_sites": len(sites),
         "available_runs": len(runs),
         "earliest": min(run["start"] for run in runs),
@@ -226,760 +268,39 @@ def build_map_data(
             ).astimezone().isoformat(timespec="seconds")
         except OSError:
             data_updated_at = None
-    stable = {
+    availability = {
         "locations": locations,
         "bounds": bounds,
-        "progress": progress,
         "missing_coordinates": missing_coordinates,
+    }
+    availability_fingerprint = _fingerprint(availability)
+    progress_snapshot = {
+        "progress": progress,
         "data_updated_at": data_updated_at,
     }
-    fingerprint = hashlib.sha256(
-        json.dumps(stable, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()[:16]
+    progress_fingerprint = _fingerprint(progress_snapshot)
+    stable = {**availability, **progress_snapshot}
     return {
         **stable,
-        "fingerprint": fingerprint,
+        # ``fingerprint`` remains the complete payload revision for callers
+        # that only need one value.  The event stream uses the two component
+        # revisions to avoid fetching the full payload for checkpoint-only
+        # updates.
+        "fingerprint": _fingerprint(stable),
+        "availability_fingerprint": availability_fingerprint,
+        "progress_fingerprint": progress_fingerprint,
         "generated_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
     }
 
 
-MAP_HTML = r"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Campground availability map</title>
-  <style>
-    :root { color-scheme: light; font-family: ui-sans-serif, system-ui, sans-serif; }
-    * { box-sizing: border-box; }
-    body { margin: 0; color: #17211a; background: #f4f1e8; }
-    header { padding: 14px 18px; background: #193c2b; color: white; }
-    header h1 { margin: 0 0 4px; font-size: 20px; }
-    #status { font-size: 13px; opacity: .9; }
-    #freshness { display: inline-flex; align-items: center; min-height: 24px; margin-top: 7px; padding: 3px 8px;
-      border: 1px solid #94c7a4; border-radius: 999px; background: #16412d; color: #edf8ef; font-size: 12px; font-weight: 650; }
-    #freshness.stale { border-color: #f7cf83; background: #5b3b12; color: #fff4dc; }
-    #layout { display: grid; grid-template-columns: minmax(250px, 340px) 1fr; height: calc(100vh - 72px); }
-    #sidebar { overflow: auto; padding: 12px; border-right: 1px solid #c9c5b8; background: #fffdf7; }
-    #filters { margin: 0 0 12px; padding: 10px; border: 1px solid #d4d0c4; border-radius: 9px; background: #f8f6ef; }
-    #filters legend { padding: 0 4px; font-size: 13px; font-weight: 700; }
-    .date-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .date-fields label { display: grid; gap: 3px; color: #536158; font-size: 11px; font-weight: 650; }
-    .date-fields input { width: 100%; min-width: 0; padding: 6px; border: 1px solid #aaa69b; border-radius: 6px;
-      background: white; color: #17211a; font: inherit; font-size: 12px; }
-    #presets { display: flex; gap: 5px; margin-top: 8px; }
-    #presets button { flex: 1; padding: 5px 3px; border: 1px solid #aaa69b; border-radius: 6px; background: white;
-      color: #284034; cursor: pointer; font-size: 11px; }
-    #presets button:hover, #presets button:focus-visible { border-color: #23704a; outline: 1px solid #23704a; }
-    #summary { font-size: 14px; margin: 2px 2px 12px; }
-    #locations { display: grid; gap: 8px; }
-    .location { width: 100%; text-align: left; border: 1px solid #d4d0c4; border-radius: 9px; padding: 10px;
-      background: white; color: inherit; cursor: pointer; }
-    .location:hover, .location:focus-visible { border-color: #23704a; outline: 2px solid #a9d8bd; }
-    .location strong { display: block; font-size: 14px; }
-    .meta { display: block; margin-top: 4px; color: #536158; font-size: 12px; }
-    #map { position: relative; overflow: hidden; background: #dce6dc; min-height: 420px; }
-    #tiles, #markers { position: absolute; inset: 0; overflow: hidden; }
-    #tiles img { position: absolute; width: 256px; height: 256px; user-select: none; }
-    .marker { position: absolute; transform: translate(-50%, -100%); width: 30px; height: 38px; border: 0;
-      clip-path: polygon(50% 100%, 5% 42%, 7% 23%, 19% 8%, 36% 1%, 64% 1%, 81% 8%, 93% 23%, 95% 42%);
-      background: #1769aa; color: white; font-weight: 700; cursor: pointer; filter: drop-shadow(0 2px 2px #0007); }
-    .marker:hover, .marker:focus-visible { z-index: 3; scale: 1.14; outline: none; }
-    #controls { position: absolute; z-index: 5; top: 12px; right: 12px; display: grid; gap: 6px; }
-    #controls button { border: 1px solid #777; background: white; border-radius: 6px; min-width: 38px; min-height: 36px;
-      font-size: 18px; cursor: pointer; }
-    #availability-card { position: absolute; z-index: 8; display: flex; flex-direction: column; width: min(430px, calc(100% - 24px));
-      height: min(520px, calc(100% - 24px)); min-width: 290px; min-height: 230px; max-width: calc(100% - 24px); max-height: calc(100% - 24px);
-      padding: 10px; overflow: hidden; resize: both; border: 1px solid #52645a; border-radius: 10px; background: #fffffff2; box-shadow: 0 5px 25px #0004; }
-    #availability-card[hidden] { display: none; }
-    #card-header { display: flex; align-items: center; justify-content: space-between; flex: none; gap: 10px; min-height: 29px; cursor: grab; user-select: none; }
-    #card-header.dragging { cursor: grabbing; }
-    #card-title { min-width: 0; overflow: hidden; color: #17211a; font-size: 17px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
-    #card-actions { display: flex; flex: none; gap: 4px; }
-    .card-action { display: grid; place-items: center; width: 29px; height: 29px; padding: 0; border: 1px solid #aaa69b; border-radius: 6px;
-      background: white; color: #294536; cursor: pointer; }
-    .card-action:hover, .card-action:focus-visible { border-color: #23704a; outline: 2px solid #a9d8bd; }
-    .card-action[aria-pressed="true"] { border-color: #193c2b; background: #193c2b; color: white; }
-    .card-action svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-    #card-content { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; }
-    #card-content p { margin: 5px 0; font-size: 13px; }
-    #card-content a { color: #075b36; font-weight: 650; }
-    #card-content .card-provider { margin-top: 8px; color: #536158; font-size: 11px; }
-    .availability-table-block { display: flex; flex: 1; flex-direction: column; min-height: 120px; }
-    .availability-table-block .run-table-shell { flex: 1; max-height: none; }
-    .run-table-shell { max-height: min(390px, 56vh); margin: 8px 0 5px; overflow: auto; overscroll-behavior: contain;
-      border: 1px solid #cbc7bb; border-radius: 8px; background: #fffefa; box-shadow: inset 0 1px #fff; }
-    .run-table { width: 100%; margin: 0; border-collapse: separate; border-spacing: 0; font-size: 12px; }
-    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-    .run-table th, .run-table td { padding: 8px 9px; text-align: left; vertical-align: top; border-bottom: 1px solid #e3dfd4; }
-    .run-table thead th { position: sticky; inset-block-start: 0; z-index: 2; background: #e0ebe3; color: #294536; box-shadow: 0 1px #bccdc1;
-      font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
-    .run-table tbody th { width: 1%; color: #203c2c; font-weight: 750; white-space: nowrap; }
-    .run-table tbody tr:nth-child(even) { background: #f7f5ef; }
-    .run-table tbody tr:hover { background: #eaf4ed; }
-    .run-table tbody tr:last-child td, .run-table tbody tr:last-child th { border-bottom: 0; }
-    .stay-options { display: flex; flex-wrap: wrap; gap: 6px; }
-    .stay-chip { display: inline-flex; align-items: center; min-height: 28px; padding: 3px 8px; border: 1px solid #28714c;
-      border-radius: 999px; background: #eaf5ed; color: #075b36; font-weight: 750; line-height: 1.15; text-decoration: none; }
-    .stay-chip:hover, .stay-chip:focus-visible { border-color: #075b36; background: #cfe8d6; outline: 2px solid #a9d8bd; outline-offset: 1px; }
-    .more-runs { margin: 5px 1px 8px; color: #536158; font-size: 11px; }
-    #attribution { position: absolute; z-index: 5; right: 5px; bottom: 3px; padding: 2px 5px; background: #ffffffe8;
-      font-size: 11px; }
-    #attribution a { color: #17472e; }
-    .empty { padding: 20px 8px; color: #536158; }
-    @media (max-width: 760px) {
-      #layout { grid-template-columns: 1fr; grid-template-rows: 38vh 1fr; height: calc(100vh - 72px); }
-      #sidebar { border-right: 0; border-bottom: 1px solid #c9c5b8; }
-      #map { min-height: 340px; }
+def _event_payload(data: dict) -> dict:
+    """Return the tiny event-stream message for a full map-data snapshot."""
+    return {
+        "availability_fingerprint": data["availability_fingerprint"],
+        "progress_fingerprint": data["progress_fingerprint"],
+        "progress": data["progress"],
+        "data_updated_at": data["data_updated_at"],
     }
-  </style>
-</head>
-<body>
-  <header><h1>Campground availability</h1><div id="status">Loading local results…</div><div id="freshness" aria-live="polite"></div></header>
-  <main id="layout">
-    <aside id="sidebar">
-      <fieldset id="filters">
-        <legend>Dates to display</legend>
-        <div class="date-fields">
-          <label>From <input id="date-from" type="date"></label>
-          <label>Through <input id="date-through" type="date"></label>
-        </div>
-        <div id="presets" aria-label="Date range presets">
-          <button type="button" data-days="7">Next 7 days</button>
-          <button type="button" data-days="30">Next 30 days</button>
-          <button type="button" data-days="all">All results</button>
-        </div>
-      </fieldset>
-      <div id="summary" aria-live="polite"></div><div id="locations"></div>
-    </aside>
-    <section id="map" aria-label="Map of campgrounds with availability">
-      <div id="tiles"></div><div id="markers"></div>
-      <div id="controls"><button id="zoom-in" title="Zoom in">+</button><button id="zoom-out" title="Zoom out">−</button>
-        <button id="fit" title="Fit displayed campgrounds" style="font-size:12px">Fit</button></div>
-      <aside id="availability-card" role="dialog" aria-modal="false" aria-label="Campground availability" hidden>
-        <div id="card-header"><strong id="card-title"></strong><div id="card-actions">
-          <button type="button" class="card-action" id="card-pin" aria-label="Pin availability card" aria-pressed="false" title="Pin availability card"></button>
-          <button type="button" class="card-action" id="card-close" aria-label="Close availability card" title="Close availability card"></button>
-        </div></div><div id="card-content"></div>
-      </aside>
-      <div id="attribution"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>
-        · <a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noopener">Report a map issue</a></div>
-    </section>
-  </main>
-<script>
-"use strict";
-const TILE_SIZE = 256;
-const TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
-let mapData = null;
-let zoom = 7;
-let center = {lat: 47.6, lon: -122.2};
-let initialized = false;
-let filtersInitialized = false;
-let usingAllDates = true;
-let visibleLocations = [];
-let cardPinned = false;
-let cardLocationKey = null;
-let cardAnchor = null;
-let cardHideTimer = null;
-let cardDrag = null;
-
-const map = document.getElementById("map");
-const tiles = document.getElementById("tiles");
-const markers = document.getElementById("markers");
-const availabilityCard = document.getElementById("availability-card");
-const cardTitle = document.getElementById("card-title");
-const cardContent = document.getElementById("card-content");
-const cardHeader = document.getElementById("card-header");
-const cardPin = document.getElementById("card-pin");
-const dateFrom = document.getElementById("date-from");
-const dateThrough = document.getElementById("date-through");
-
-function addIsoDays(value, days) {
-  const date = new Date(`${value}T00:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
-function dayCount(start, end) {
-  return Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86400000) + 1;
-}
-
-function formatDate(value) {
-  return new Intl.DateTimeFormat(undefined, {month: "short", day: "numeric", year: "numeric", timeZone: "UTC"})
-    .format(new Date(`${value}T00:00:00Z`));
-}
-
-function formatDateRange(run) {
-  return run.display_start === run.display_end
-    ? formatDate(run.display_start)
-    : `${formatDate(run.display_start)} – ${formatDate(run.display_end)}`;
-}
-
-function availabilityRows(location) {
-  if (!location.key.startsWith("wa:")) {
-    return location.runs.map(run => ({...run, site_count: 1}));
-  }
-  const grouped = new Map();
-  location.runs.forEach(run => {
-    const key = `${run.display_start}|${run.display_end}`;
-    if (!grouped.has(key)) {
-      grouped.set(key, {
-        display_start: run.display_start,
-        display_end: run.display_end,
-        sites: new Set()
-      });
-    }
-    grouped.get(key).sites.add(run.site);
-  });
-  return [...grouped.values()]
-    .map(row => ({...row, site_count: row.sites.size}))
-    .sort((left, right) => left.display_start.localeCompare(right.display_start)
-      || left.display_end.localeCompare(right.display_end));
-}
-
-function availabilityDateGroups(location) {
-  const grouped = new Map();
-  availabilityRows(location).forEach(run => {
-    if (!grouped.has(run.display_start)) grouped.set(run.display_start, new Map());
-    const stays = grouped.get(run.display_start);
-    if (!stays.has(run.display_end)) {
-      stays.set(run.display_end, {
-        display_start: run.display_start,
-        display_end: run.display_end,
-        site_count: 0,
-      });
-    }
-    stays.get(run.display_end).site_count += run.site_count;
-  });
-  return [...grouped.entries()]
-    .map(([checkIn, runs]) => ({
-      checkIn,
-      runs: [...runs.values()].sort((left, right) => left.display_end.localeCompare(right.display_end)),
-    }))
-    .sort((left, right) => left.checkIn.localeCompare(right.checkIn));
-}
-
-function bookingUrlFor(location, run) {
-  if (!run || !location.key.startsWith("wa:")) return location.booking_url;
-  try {
-    const url = new URL(location.booking_url);
-    if (url.searchParams.has("startDate")) {
-      url.searchParams.set("startDate", run.display_start);
-      url.searchParams.set("endDate", addIsoDays(run.display_end, 1));
-    }
-    return url.href;
-  } catch (error) {
-    return location.booking_url;
-  }
-}
-
-function makeStayChip(location, run) {
-  const nights = dayCount(run.display_start, run.display_end);
-  const text = `${nights} night${nights === 1 ? "" : "s"} · ${run.site_count} site${run.site_count === 1 ? "" : "s"}`;
-  const link = document.createElement("a");
-  link.className = "stay-chip";
-  link.href = bookingUrlFor(location, run);
-  link.target = "_blank";
-  link.rel = "noopener";
-  link.textContent = text;
-  link.setAttribute("aria-label", `${text} — book ${location.name}, checking in ${formatDate(run.display_start)}`);
-  return link;
-}
-
-function makeAvailabilityTable(location, limit, moreText) {
-  const groups = availabilityDateGroups(location);
-  const container = document.createElement("div");
-  const table = document.createElement("table");
-  table.className = "run-table";
-  table.setAttribute("aria-label", "Available stays by check-in date");
-  const caption = document.createElement("caption");
-  caption.className = "sr-only";
-  caption.textContent = `${location.name} availability`;
-  table.appendChild(caption);
-  const head = document.createElement("thead");
-  const headRow = document.createElement("tr");
-  const headings = ["Check in", "Available stays"];
-  headings.forEach(label => {
-    const cell = document.createElement("th");
-    cell.scope = "col";
-    cell.textContent = label;
-    headRow.appendChild(cell);
-  });
-  head.appendChild(headRow);
-  const body = document.createElement("tbody");
-  groups.slice(0, limit).forEach(group => {
-    const row = document.createElement("tr");
-    const checkIn = document.createElement("th");
-    checkIn.scope = "row";
-    checkIn.textContent = formatDate(group.checkIn);
-    const stays = document.createElement("td");
-    const options = document.createElement("div");
-    options.className = "stay-options";
-    group.runs.forEach(run => options.appendChild(makeStayChip(location, run)));
-    stays.appendChild(options);
-    row.append(checkIn, stays);
-    body.appendChild(row);
-  });
-  table.append(head, body);
-  const shell = document.createElement("div");
-  shell.className = "run-table-shell";
-  shell.tabIndex = 0;
-  shell.setAttribute("aria-label", `${location.name} availability table; scroll for more dates`);
-  shell.appendChild(table);
-  container.appendChild(shell);
-  if (groups.length > limit) {
-    const more = document.createElement("p");
-    more.className = "more-runs";
-    more.textContent = `+${groups.length - limit} more check-in day(s)${moreText}`;
-    container.appendChild(more);
-  }
-  return container;
-}
-
-function makeIcon(name) {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("aria-hidden", "true");
-  const paths = name === "pin"
-    ? ["M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5Z", "M12 13v8"]
-    : ["M6 6l12 12", "M18 6 6 18"];
-  paths.forEach(value => {
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", value);
-    svg.appendChild(path);
-  });
-  return svg;
-}
-
-function updatePinAction() {
-  const label = cardPinned ? "Unpin availability card" : "Pin availability card";
-  cardPin.setAttribute("aria-label", label);
-  cardPin.setAttribute("aria-pressed", String(cardPinned));
-  cardPin.title = label;
-}
-
-function cancelCardHide() {
-  if (cardHideTimer != null) {
-    clearTimeout(cardHideTimer);
-    cardHideTimer = null;
-  }
-}
-
-function scheduleCardHide() {
-  cancelCardHide();
-  if (cardPinned) return;
-  cardHideTimer = setTimeout(() => {
-    cardHideTimer = null;
-    const anchorActive = cardAnchor && (cardAnchor.matches(":hover") || document.activeElement === cardAnchor);
-    const cardActive = availabilityCard.matches(":hover") || availabilityCard.contains(document.activeElement);
-    if (!cardPinned && !anchorActive && !cardActive) closeLocation();
-  }, 180);
-}
-
-function clampCardPosition(left, top) {
-  const maxLeft = Math.max(12, map.clientWidth - availabilityCard.offsetWidth - 12);
-  const maxTop = Math.max(12, map.clientHeight - availabilityCard.offsetHeight - 12);
-  return {left: Math.max(12, Math.min(maxLeft, left)), top: Math.max(12, Math.min(maxTop, top))};
-}
-
-function moveCard(left, top) {
-  const position = clampCardPosition(left, top);
-  availabilityCard.style.left = `${position.left}px`;
-  availabilityCard.style.top = `${position.top}px`;
-}
-
-function placeCardNear(anchor) {
-  const markerX = Number.parseFloat(anchor.style.left);
-  const markerY = Number.parseFloat(anchor.style.top);
-  const cardWidth = availabilityCard.offsetWidth;
-  const cardHeight = availabilityCard.offsetHeight;
-  let left = markerX + 20;
-  if (left + cardWidth > map.clientWidth - 12) left = markerX - cardWidth - 20;
-  moveCard(left, markerY - cardHeight / 2);
-}
-
-function availableBounds() {
-  const runs = (mapData?.locations || []).flatMap(location => location.runs);
-  if (!runs.length) return null;
-  return {
-    first: runs.reduce((value, run) => run.start < value ? run.start : value, runs[0].start),
-    last: runs.reduce((value, run) => run.last_night > value ? run.last_night : value, runs[0].last_night)
-  };
-}
-
-function syncDateControls() {
-  const bounds = availableBounds();
-  if (!bounds) return;
-  dateFrom.min = bounds.first;
-  dateFrom.max = bounds.last;
-  dateThrough.min = bounds.first;
-  dateThrough.max = bounds.last;
-  if (!filtersInitialized || usingAllDates) {
-    dateFrom.value = bounds.first;
-    dateThrough.value = bounds.last;
-    filtersInitialized = true;
-  }
-}
-
-function filterLocation(location) {
-  const first = dateFrom.value;
-  const last = dateThrough.value;
-  const runs = location.runs
-    .filter(run => (!first || run.last_night >= first) && (!last || run.start <= last))
-    .map(run => ({
-      ...run,
-      display_start: first && run.start < first ? first : run.start,
-      display_end: last && run.last_night > last ? last : run.last_night
-    }));
-  if (!runs.length) return null;
-  return {
-    ...location,
-    runs,
-    available_sites: new Set(runs.map(run => run.site)).size,
-    available_runs: runs.length,
-    earliest: runs.reduce((value, run) => run.display_start < value ? run.display_start : value, runs[0].display_start),
-    latest_night: runs.reduce((value, run) => run.display_end > value ? run.display_end : value, runs[0].display_end)
-  };
-}
-
-function filteredLocationList() {
-  return mapData.locations
-    .map(filterLocation)
-    .filter(Boolean)
-    .sort((left, right) => left.earliest.localeCompare(right.earliest) || left.name.localeCompare(right.name));
-}
-
-function project(lat, lon, z) {
-  const size = TILE_SIZE * (2 ** z);
-  const boundedLat = Math.max(-85.0511, Math.min(85.0511, lat));
-  const sin = Math.sin(boundedLat * Math.PI / 180);
-  return {
-    x: (lon + 180) / 360 * size,
-    y: (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * size
-  };
-}
-
-function unproject(x, y, z) {
-  const size = TILE_SIZE * (2 ** z);
-  const lon = x / size * 360 - 180;
-  const n = Math.PI - 2 * Math.PI * y / size;
-  return {lat: 180 / Math.PI * Math.atan(Math.sinh(n)), lon};
-}
-
-function viewportOrigin() {
-  const c = project(center.lat, center.lon, zoom);
-  return {x: c.x - map.clientWidth / 2, y: c.y - map.clientHeight / 2};
-}
-
-function renderTiles() {
-  tiles.replaceChildren();
-  const origin = viewportOrigin();
-  const count = 2 ** zoom;
-  const minX = Math.floor(origin.x / TILE_SIZE);
-  const maxX = Math.floor((origin.x + map.clientWidth) / TILE_SIZE);
-  const minY = Math.max(0, Math.floor(origin.y / TILE_SIZE));
-  const maxY = Math.min(count - 1, Math.floor((origin.y + map.clientHeight) / TILE_SIZE));
-  for (let x = minX; x <= maxX; x += 1) {
-    for (let y = minY; y <= maxY; y += 1) {
-      const wrappedX = ((x % count) + count) % count;
-      const image = document.createElement("img");
-      image.alt = "";
-      image.decoding = "async";
-      image.draggable = false;
-      image.src = TILE_URL.replace("{z}", zoom).replace("{x}", wrappedX).replace("{y}", y);
-      image.style.left = `${x * TILE_SIZE - origin.x}px`;
-      image.style.top = `${y * TILE_SIZE - origin.y}px`;
-      tiles.appendChild(image);
-    }
-  }
-}
-
-function showLocation(location, anchor = null, pin = false) {
-  cancelCardHide();
-  if (cardPinned && cardLocationKey !== location.key && !pin) return;
-  const shouldPlace = anchor && (availabilityCard.hidden || !cardPinned);
-  cardLocationKey = location.key;
-  cardAnchor = anchor;
-  cardTitle.textContent = location.name;
-  availabilityCard.setAttribute("aria-labelledby", "card-title");
-  cardContent.replaceChildren();
-  const availability = document.createElement("p");
-  availability.textContent = `${location.available_sites} site${location.available_sites === 1 ? "" : "s"} · ${formatDate(location.earliest)} – ${formatDate(location.latest_night)}`;
-  const runHeading = document.createElement("strong");
-  runHeading.textContent = "Available stays";
-  const runTable = makeAvailabilityTable(location, Number.POSITIVE_INFINITY, "");
-  runTable.className = "availability-table-block";
-  const distance = document.createElement("p");
-  const distanceParts = [];
-  if (location.distance_km != null) distanceParts.push(`${location.distance_km} km`);
-  if (location.distance_mi != null) distanceParts.push(`${location.distance_mi} mi`);
-  if (location.est_drive_hrs != null) distanceParts.push(`~${location.est_drive_hrs} h drive`);
-  distance.textContent = distanceParts.join(" · ");
-  const link = document.createElement("a");
-  link.href = bookingUrlFor(location, location.runs[0]);
-  link.target = "_blank";
-  link.rel = "noopener";
-  link.textContent = "Open booking page";
-  const osm = document.createElement("a");
-  osm.href = `https://www.openstreetmap.org/?mlat=${location.lat}&mlon=${location.lon}#map=13/${location.lat}/${location.lon}`;
-  osm.target = "_blank";
-  osm.rel = "noopener";
-  osm.textContent = "Open location in OpenStreetMap";
-  const links = document.createElement("p");
-  links.append(link, document.createTextNode(" · "), osm);
-  const provider = document.createElement("p");
-  provider.className = "card-provider";
-  provider.textContent = `Provider: ${location.provider}`;
-  cardContent.append(availability, runHeading, runTable, distance, links, provider);
-  availabilityCard.hidden = false;
-  if (pin) cardPinned = true;
-  updatePinAction();
-  if (shouldPlace) placeCardNear(anchor);
-  else if (!availabilityCard.style.left) {
-    moveCard(16, map.clientHeight - availabilityCard.offsetHeight - 26);
-  }
-}
-
-function closeLocation() {
-  cancelCardHide();
-  cardPinned = false;
-  cardLocationKey = null;
-  cardAnchor = null;
-  availabilityCard.hidden = true;
-  availabilityCard.removeAttribute("aria-labelledby");
-  updatePinAction();
-}
-
-function renderMarkers() {
-  markers.replaceChildren();
-  if (!mapData) return;
-  const origin = viewportOrigin();
-  visibleLocations.forEach((location, index) => {
-    const point = project(location.lat, location.lon, zoom);
-    const button = document.createElement("button");
-    button.className = "marker";
-    button.textContent = String(index + 1);
-    button.setAttribute("aria-label", `${location.name}: ${location.available_sites} sites, ${location.earliest} through ${location.latest_night}`);
-    button.setAttribute("aria-haspopup", "dialog");
-    button.style.left = `${point.x - origin.x}px`;
-    button.style.top = `${point.y - origin.y}px`;
-    button.addEventListener("click", () => showLocation(location, button, true));
-    button.addEventListener("pointerenter", () => showLocation(location, button));
-    button.addEventListener("pointerleave", scheduleCardHide);
-    button.addEventListener("focus", () => showLocation(location, button));
-    button.addEventListener("blur", scheduleCardHide);
-    markers.appendChild(button);
-  });
-}
-
-function renderMap() { renderTiles(); renderMarkers(); }
-
-function fitAll() {
-  if (!mapData) return;
-  const b = visibleLocations.length ? {
-    south: Math.min(...visibleLocations.map(location => location.lat)),
-    west: Math.min(...visibleLocations.map(location => location.lon)),
-    north: Math.max(...visibleLocations.map(location => location.lat)),
-    east: Math.max(...visibleLocations.map(location => location.lon))
-  } : mapData.bounds;
-  for (let candidate = 12; candidate >= 4; candidate -= 1) {
-    const nw = project(b.north, b.west, candidate);
-    const se = project(b.south, b.east, candidate);
-    if (Math.abs(se.x - nw.x) <= map.clientWidth - 90 && Math.abs(se.y - nw.y) <= map.clientHeight - 90) {
-      zoom = candidate;
-      const midpoint = unproject((nw.x + se.x) / 2, (nw.y + se.y) / 2, candidate);
-      center = midpoint;
-      break;
-    }
-  }
-  renderMap();
-}
-
-function focusLocation(location) {
-  center = {lat: location.lat, lon: location.lon};
-  zoom = Math.max(zoom, 10);
-  renderMap();
-  showLocation(location, null, true);
-}
-
-function renderSidebar() {
-  const list = document.getElementById("locations");
-  const summary = document.getElementById("summary");
-  list.replaceChildren();
-  const filterDescription = dateFrom.value && dateThrough.value
-    ? ` from ${formatDate(dateFrom.value)} through ${formatDate(dateThrough.value)}`
-    : "";
-  summary.textContent = `${visibleLocations.length} of ${mapData.locations.length} campground(s) have availability${filterDescription}.`;
-  if (!visibleLocations.length) {
-    const empty = document.createElement("div");
-    empty.className = "empty";
-    empty.textContent = "No qualifying availability overlaps this date range.";
-    list.appendChild(empty);
-    return;
-  }
-  visibleLocations.forEach((location, index) => {
-    const button = document.createElement("button");
-    button.className = "location";
-    const name = document.createElement("strong");
-    name.textContent = `${index + 1}. ${location.name}`;
-    const meta = document.createElement("span");
-    meta.className = "meta";
-    meta.textContent = `${location.available_sites} site(s) · ${location.earliest} → ${location.latest_night} · ${location.provider}`;
-    button.append(name, meta);
-    button.addEventListener("click", () => focusLocation(location));
-    list.appendChild(button);
-  });
-}
-
-function renderResults() {
-  if (!mapData) return;
-  visibleLocations = filteredLocationList();
-  closeLocation();
-  renderSidebar();
-  renderMarkers();
-}
-
-function applyDateFilter(changedInput) {
-  if (dateFrom.value && dateThrough.value && dateFrom.value > dateThrough.value) {
-    if (changedInput === dateFrom) dateThrough.value = dateFrom.value;
-    else dateFrom.value = dateThrough.value;
-  }
-  usingAllDates = false;
-  renderResults();
-}
-
-function applyPreset(days) {
-  const bounds = availableBounds();
-  if (!bounds) return;
-  if (days === "all") {
-    dateFrom.value = bounds.first;
-    dateThrough.value = bounds.last;
-    usingAllDates = true;
-  } else {
-    const today = new Date();
-    const localToday = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-    const start = localToday >= bounds.first && localToday <= bounds.last ? localToday : bounds.first;
-    dateFrom.value = start;
-    dateThrough.value = addIsoDays(start, Number(days) - 1) > bounds.last
-      ? bounds.last
-      : addIsoDays(start, Number(days) - 1);
-    usingAllDates = false;
-  }
-  renderResults();
-}
-
-function renderStatus() {
-  const progress = mapData.progress || {};
-  const parts = [];
-  const updated = mapData.data_updated_at ? new Date(mapData.data_updated_at) : null;
-  if (updated && !Number.isNaN(updated.getTime())) {
-    parts.push(`Data updated ${updated.toLocaleString()}`);
-  } else {
-    parts.push("Data update time unavailable");
-  }
-  if (progress.status === "running" || progress.status === "failed") {
-    parts.push(`scan ${progress.status}: ${progress.completed ?? "?"}/${progress.total ?? "?"}`);
-  }
-  if (mapData.missing_coordinates.length) parts.push(`${mapData.missing_coordinates.length} result(s) lack coordinates`);
-  document.getElementById("status").textContent = parts.join(" · ");
-  const freshness = document.getElementById("freshness");
-  const ageMinutes = updated ? Math.floor((Date.now() - updated.getTime()) / 60000) : null;
-  if (ageMinutes == null || Number.isNaN(ageMinutes)) {
-    freshness.textContent = "Availability freshness is unknown";
-    freshness.classList.add("stale");
-  } else if (ageMinutes > 60) {
-    const hours = Math.floor(ageMinutes / 60);
-    const minutes = ageMinutes % 60;
-    freshness.textContent = `Stale availability data: last updated ${hours}h ${minutes}m ago`;
-    freshness.classList.add("stale");
-  } else {
-    freshness.textContent = `Availability data is current (${ageMinutes}m old)`;
-    freshness.classList.remove("stale");
-  }
-}
-
-async function refreshData() {
-  try {
-    const response = await fetch("/data.json", {cache: "no-store"});
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const fresh = await response.json();
-    const changed = !mapData || fresh.fingerprint !== mapData.fingerprint;
-    mapData = fresh;
-    renderStatus();
-    if (changed) {
-      syncDateControls();
-      visibleLocations = filteredLocationList();
-      renderSidebar();
-      if (!initialized) { initialized = true; fitAll(); }
-      else renderMarkers();
-    }
-  } catch (error) {
-    document.getElementById("status").textContent = `Map data unavailable: ${error.name}`;
-  }
-}
-
-document.getElementById("zoom-in").addEventListener("click", () => { zoom = Math.min(14, zoom + 1); renderMap(); });
-document.getElementById("zoom-out").addEventListener("click", () => { zoom = Math.max(4, zoom - 1); renderMap(); });
-document.getElementById("fit").addEventListener("click", fitAll);
-cardPin.appendChild(makeIcon("pin"));
-document.getElementById("card-close").appendChild(makeIcon("close"));
-cardPin.addEventListener("click", () => {
-  cardPinned = !cardPinned;
-  updatePinAction();
-  if (!cardPinned) scheduleCardHide();
-});
-document.getElementById("card-close").addEventListener("click", closeLocation);
-availabilityCard.addEventListener("pointerenter", cancelCardHide);
-availabilityCard.addEventListener("pointerleave", scheduleCardHide);
-availabilityCard.addEventListener("focusin", cancelCardHide);
-availabilityCard.addEventListener("focusout", scheduleCardHide);
-cardHeader.addEventListener("pointerdown", event => {
-  if (event.button !== 0 || event.target.closest("button")) return;
-  event.preventDefault();
-  const rect = availabilityCard.getBoundingClientRect();
-  const mapRect = map.getBoundingClientRect();
-  cardDrag = {
-    pointerId: event.pointerId,
-    offsetX: event.clientX - rect.left,
-    offsetY: event.clientY - rect.top,
-    mapLeft: mapRect.left,
-    mapTop: mapRect.top,
-  };
-  cardHeader.classList.add("dragging");
-  cardHeader.setPointerCapture(event.pointerId);
-});
-cardHeader.addEventListener("pointermove", event => {
-  if (!cardDrag || event.pointerId !== cardDrag.pointerId) return;
-  moveCard(event.clientX - cardDrag.mapLeft - cardDrag.offsetX, event.clientY - cardDrag.mapTop - cardDrag.offsetY);
-});
-cardHeader.addEventListener("pointerup", event => {
-  if (!cardDrag || event.pointerId !== cardDrag.pointerId) return;
-  cardHeader.releasePointerCapture(event.pointerId);
-  cardDrag = null;
-  cardHeader.classList.remove("dragging");
-  cardPinned = true;
-  updatePinAction();
-});
-dateFrom.addEventListener("input", () => applyDateFilter(dateFrom));
-dateThrough.addEventListener("input", () => applyDateFilter(dateThrough));
-document.querySelectorAll("#presets button").forEach(button => {
-  button.addEventListener("click", () => applyPreset(button.dataset.days));
-});
-document.addEventListener("keydown", event => {
-  if (event.key === "Escape" && !availabilityCard.hidden) closeLocation();
-});
-window.addEventListener("resize", () => {
-  if (initialized) renderMap();
-  if (!availabilityCard.hidden) {
-    moveCard(Number.parseFloat(availabilityCard.style.left), Number.parseFloat(availabilityCard.style.top));
-  }
-});
-refreshData();
-setInterval(refreshData, 5000);
-</script>
-</body>
-</html>
-"""
 
 
 def _port(value: str) -> int:
@@ -992,27 +313,92 @@ def _port(value: str) -> int:
 def _handler():
     class MapHandler(BaseHTTPRequestHandler):
         server_version = "CampwatchMap/1.0"
+        protocol_version = "HTTP/1.1"
 
         def _allowed_host(self) -> bool:
             host = self.headers.get("Host", "")
             port = self.server.server_address[1]
             return host in {"127.0.0.1", f"127.0.0.1:{port}", "localhost", f"localhost:{port}"}
 
-        def _send(self, status: int, content_type: str, body: bytes) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
+        def _send_security_headers(self) -> None:
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
             self.send_header(
                 "Content-Security-Policy",
                 "default-src 'self'; img-src https://tile.openstreetmap.org; "
-                "style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+                "style-src 'unsafe-inline'; script-src 'self'; "
                 "connect-src 'self'; object-src 'none'; base-uri 'none'",
             )
+
+        def _send(self, status: int, content_type: str, body: bytes) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(body)
+
+        def _send_event_headers(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self._send_security_headers()
+            self.end_headers()
+            self.wfile.write(f"retry: {EVENT_RETRY_MILLISECONDS}\n\n".encode())
+            self.wfile.flush()
+
+        def _write_event(self, event: str, payload: dict) -> None:
+            encoded = json.dumps(payload, separators=(",", ":"))
+            self.wfile.write(f"event: {event}\ndata: {encoded}\n\n".encode())
+            self.wfile.flush()
+
+        def _stream_events(self) -> None:
+            """Send an initial snapshot, then only semantic local changes."""
+            revisions = _source_revisions()
+            data = build_map_data()
+            availability_fingerprint = data["availability_fingerprint"]
+            progress_fingerprint = data["progress_fingerprint"]
+            try:
+                self._send_event_headers()
+                self._write_event("map-update", _event_payload(data))
+                last_heartbeat = time.monotonic()
+                while True:
+                    time.sleep(EVENT_POLL_SECONDS)
+                    current_revisions = _source_revisions()
+                    if current_revisions != revisions:
+                        # ``watch.py`` writes state and progress as two atomic
+                        # replaces.  A tiny debounce coalesces them into one
+                        # map event whenever they land together.
+                        time.sleep(EVENT_DEBOUNCE_SECONDS)
+                        before = _source_revisions()
+                        fresh = build_map_data()
+                        after = _source_revisions()
+                        if before != after:
+                            # A writer completed between the two reads; wait
+                            # for a stable snapshot instead of announcing a
+                            # mixed revision.
+                            continue
+                        revisions = after
+                        availability_changed = (
+                            fresh["availability_fingerprint"]
+                            != availability_fingerprint
+                        )
+                        progress_changed = (
+                            fresh["progress_fingerprint"] != progress_fingerprint
+                        )
+                        availability_fingerprint = fresh["availability_fingerprint"]
+                        progress_fingerprint = fresh["progress_fingerprint"]
+                        if availability_changed or progress_changed:
+                            self._write_event("map-update", _event_payload(fresh))
+                            last_heartbeat = time.monotonic()
+                    elif time.monotonic() - last_heartbeat >= EVENT_HEARTBEAT_SECONDS:
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                        last_heartbeat = time.monotonic()
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return
 
         def do_GET(self) -> None:  # noqa: N802
             if not self._allowed_host():
@@ -1024,6 +410,10 @@ def _handler():
             elif path == "/data.json":
                 body = json.dumps(build_map_data(), separators=(",", ":")).encode()
                 self._send(200, "application/json; charset=utf-8", body)
+            elif path == "/events":
+                self._stream_events()
+            elif path == "/availability_map.js":
+                self._send(200, "application/javascript; charset=utf-8", MAP_JS.encode())
             elif path == "/favicon.ico":
                 self._send(204, "image/x-icon", b"")
             else:

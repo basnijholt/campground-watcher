@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import tempfile
+import threading
 import unittest
 import urllib.error
 from email.message import Message
@@ -14,6 +15,7 @@ from unittest import mock
 import campwatch_http
 import campwatch_config
 import build_candidates
+import build_wa_parks
 import availability_map
 import run_watch
 import watch
@@ -140,6 +142,34 @@ class HttpTransportTests(unittest.TestCase):
             client.get_json("https://api.example.com/data")
         self.assertEqual(len(opener.calls), 1)
 
+    def test_429_defers_shared_provider_pacer_even_without_retry(self):
+        opener = FakeOpener(
+            FakeHttpResponse(b"busy", status=429, headers={"Retry-After": "20"})
+        )
+        pacer = mock.Mock()
+        client = self.client(opener, attempts=1, max_retry_delay=3, pacer=pacer)
+        with self.assertRaises(campwatch_http.HttpRequestError):
+            client.get_json("https://api.example.com/data")
+        pacer.wait.assert_called_once_with()
+        pacer.defer.assert_called_once_with(3)
+
+    def test_request_pacer_spaces_starts_and_honors_shared_deferral(self):
+        now = [0.0]
+        sleeps = []
+
+        def sleep(delay):
+            sleeps.append(delay)
+            now[0] += delay
+
+        pacer = campwatch_http.RequestPacer(
+            1.0, monotonic=lambda: now[0], sleeper=sleep
+        )
+        pacer.wait()
+        pacer.wait()
+        pacer.defer(5.0)
+        pacer.wait()
+        self.assertEqual(sleeps, [1.0, 5.0])
+
     def test_malformed_json_is_not_retried(self):
         opener = FakeOpener(FakeHttpResponse(b"<html>blocked</html>"))
         client = self.client(opener)
@@ -161,18 +191,21 @@ class HttpTransportTests(unittest.TestCase):
 
 
 class ProviderClientTests(unittest.TestCase):
-    def test_osm_router_uses_bounded_distance_table(self):
+    def test_osm_router_uses_bounded_route_table(self):
         http = mock.Mock()
-        http.get_json.return_value = {"distances": [[0, 12_345, None]]}
+        http.get_json.return_value = {
+            "distances": [[0, 12_345, None]],
+            "durations": [[0, 987.6, None]],
+        }
         router = campwatch_http.OsmDrivingRouter(http=http)
         self.assertEqual(
-            router.driving_distances_km(47.0, -122.0, [(47.1, -122.1), (47.2, -122.2)]),
-            [12.345, None],
+            router.driving_routes(47.0, -122.0, [(47.1, -122.1), (47.2, -122.2)]),
+            [(12.345, 987.6), (None, None)],
         )
         url = http.get_json.call_args.args[0]
         self.assertTrue(url.startswith("https://routing.openstreetmap.de/routed-car/table/v1/driving/"))
         self.assertEqual(http.get_json.call_args.kwargs["params"], {
-            "sources": "0", "annotations": "distance"
+            "sources": "0", "annotations": "distance,duration"
         })
 
     def test_going_to_camp_rejects_malformed_endpoint_schema(self):
@@ -244,10 +277,19 @@ class AvailabilityMapTests(unittest.TestCase):
                 )
             )
             paths["candidates_path"].write_text(
-                json.dumps([{"id": 1, "lat": 47.1, "lon": -122.1}])
+                json.dumps([
+                    {"id": 1, "lat": 47.1, "lon": -122.1, "osrm_duration_seconds": 960}
+                ])
             )
             paths["wa_parks_path"].write_text(
-                json.dumps([{"facility_id": -2, "lat": 47.2, "lon": -122.2}])
+                json.dumps([
+                    {
+                        "facility_id": -2,
+                        "lat": 47.2,
+                        "lon": -122.2,
+                        "osrm_duration_seconds": 1_440,
+                    }
+                ])
             )
 
             data = availability_map.build_map_data(**paths)
@@ -258,32 +300,125 @@ class AvailabilityMapTests(unittest.TestCase):
             self.assertEqual(len(data["locations"][0]["runs"]), 14)
             self.assertIn("recreation.gov", data["locations"][0]["booking_url"])
             self.assertIn("goingtocamp.com", data["locations"][1]["booking_url"])
+            self.assertEqual(data["locations"][0]["osrm_duration_seconds"], 960)
+            self.assertEqual(data["locations"][1]["osrm_duration_seconds"], 1_440)
             self.assertEqual(data["progress"], {
                 "status": "running", "completed": 4, "total": 10
             })
             self.assertNotIn("signature", data["progress"])
             self.assertIsNotNone(data["data_updated_at"])
             self.assertEqual(data["bounds"]["north"], 47.2)
+            self.assertEqual(len(data["availability_fingerprint"]), 16)
+            self.assertEqual(len(data["progress_fingerprint"]), 16)
 
-    def test_map_html_uses_no_external_javascript_and_attributes_tiles(self):
-        self.assertNotIn("<script src=", availability_map.MAP_HTML)
-        self.assertIn("https://tile.openstreetmap.org/{z}/{x}/{y}.png", availability_map.MAP_HTML)
+    def test_map_separates_availability_and_checkpoint_revisions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = {
+                "config_path": root / "watch_config.json",
+                "state_path": root / "last_state.json",
+                "progress_path": root / "scan_progress.json",
+                "candidates_path": root / "candidates.json",
+                "wa_parks_path": root / "wa_parks.json",
+            }
+            paths["config_path"].write_text(
+                json.dumps(
+                    {
+                        "recdotgov": [
+                            {"id": 1, "name": "Federal", "lat": 47.1, "lon": -122.1}
+                        ],
+                        "going_to_camp": [],
+                    }
+                )
+            )
+            paths["state_path"].write_text(json.dumps({"rg:1": ["A|2026-08-01|2"]}))
+            paths["progress_path"].write_text(
+                json.dumps({"status": "running", "completed": 1, "total": 2})
+            )
+            paths["candidates_path"].write_text("[]")
+            paths["wa_parks_path"].write_text("[]")
+
+            first = availability_map.build_map_data(**paths)
+            paths["progress_path"].write_text(
+                json.dumps({"status": "running", "completed": 2, "total": 2})
+            )
+            checkpoint_only = availability_map.build_map_data(**paths)
+            self.assertEqual(
+                first["availability_fingerprint"],
+                checkpoint_only["availability_fingerprint"],
+            )
+            self.assertNotEqual(
+                first["progress_fingerprint"],
+                checkpoint_only["progress_fingerprint"],
+            )
+
+            paths["state_path"].write_text(
+                json.dumps({"rg:1": ["A|2026-08-01|2", "B|2026-08-10|2"]})
+            )
+            availability_changed = availability_map.build_map_data(**paths)
+            self.assertNotEqual(
+                checkpoint_only["availability_fingerprint"],
+                availability_changed["availability_fingerprint"],
+            )
+            self.assertEqual(
+                set(availability_map._event_payload(availability_changed)),
+                {
+                    "availability_fingerprint",
+                    "progress_fingerprint",
+                    "progress",
+                    "data_updated_at",
+                },
+            )
+
+    def test_map_uses_separate_first_party_static_assets_and_attributes_tiles(self):
+        html_path = availability_map.HERE / "availability_map.html"
+        self.assertEqual(
+            availability_map.MAP_HTML,
+            html_path.read_text(encoding="utf-8"),
+        )
+        self.assertNotIn(
+            "<!doctype html>",
+            Path(availability_map.__file__).read_text(encoding="utf-8").lower(),
+        )
+        self.assertIn('<script src="/availability_map.js" defer></script>', availability_map.MAP_HTML)
+        self.assertNotIn('"use strict";', availability_map.MAP_HTML)
+        self.assertIn("https://tile.openstreetmap.org/{z}/{x}/{y}.png", availability_map.MAP_JS)
         self.assertIn("© OpenStreetMap contributors", availability_map.MAP_HTML)
         self.assertIn('id="date-from" type="date"', availability_map.MAP_HTML)
         self.assertIn('id="date-through" type="date"', availability_map.MAP_HTML)
         self.assertIn('id="availability-card" role="dialog"', availability_map.MAP_HTML)
-        self.assertIn('className = "run-table"', availability_map.MAP_HTML)
-        self.assertIn('["Check in", "Available stays"]', availability_map.MAP_HTML)
-        self.assertIn('function availabilityDateGroups(location)', availability_map.MAP_HTML)
-        self.assertIn('function makeStayChip(location, run)', availability_map.MAP_HTML)
-        self.assertIn('className = "run-table-shell"', availability_map.MAP_HTML)
-        self.assertIn('Stale availability data:', availability_map.MAP_HTML)
+        self.assertIn('className = "run-table"', availability_map.MAP_JS)
+        self.assertIn('["Check in", "Available stays"]', availability_map.MAP_JS)
+        self.assertIn('function availabilityDateGroups(location)', availability_map.MAP_JS)
+        self.assertIn('function makeStayChip(location, run)', availability_map.MAP_JS)
+        self.assertIn('function formatCheckInDate(value)', availability_map.MAP_JS)
+        self.assertIn('checkIn.textContent = formatCheckInDate(group.checkIn)', availability_map.MAP_JS)
+        self.assertIn('function formatDriveDuration(seconds)', availability_map.MAP_JS)
+        self.assertIn('OpenStreetMap/OSRM route time (no live traffic).', availability_map.MAP_JS)
+        self.assertIn('WA/Tacoma Power park-list estimate', availability_map.MAP_JS)
+        self.assertIn('className = "run-table-shell"', availability_map.MAP_JS)
+        self.assertIn('Stale availability data:', availability_map.MAP_JS)
+        self.assertIn('const FRESH_SCAN_COMMAND = "python3 watch.py --all-once"', availability_map.MAP_JS)
+        self.assertIn('freshness.addEventListener("click", copyFreshScanCommand)', availability_map.MAP_JS)
         self.assertIn('id="card-pin"', availability_map.MAP_HTML)
         self.assertIn('resize: both', availability_map.MAP_HTML)
-        self.assertIn('function placeCardNear(anchor)', availability_map.MAP_HTML)
+        self.assertIn('function placeCardNear(anchor)', availability_map.MAP_JS)
+        self.assertIn('tabindex="0"', availability_map.MAP_HTML)
+        self.assertIn('function panBy(screenX, screenY)', availability_map.MAP_JS)
+        self.assertIn('function zoomAt(clientX, clientY, amount)', availability_map.MAP_JS)
+        self.assertIn('map.addEventListener("pointerdown"', availability_map.MAP_JS)
+        self.assertIn('map.addEventListener("wheel"', availability_map.MAP_JS)
+        self.assertIn('map.addEventListener("keydown"', availability_map.MAP_JS)
+        self.assertIn('id="fit" aria-label="Fit displayed campgrounds"', availability_map.MAP_HTML)
         self.assertNotIn('.marker.rg', availability_map.MAP_HTML)
-        self.assertIn('provider.textContent = `Provider: ${location.provider}`', availability_map.MAP_HTML)
-        self.assertIn('function closeLocation()', availability_map.MAP_HTML)
+        self.assertIn('provider.textContent = `Provider: ${location.provider}`', availability_map.MAP_JS)
+        self.assertIn('function closeLocation()', availability_map.MAP_JS)
+        self.assertIn('new EventSource("/events")', availability_map.MAP_JS)
+        self.assertIn('events.addEventListener("map-update", handleMapUpdate)', availability_map.MAP_JS)
+        self.assertNotIn("setInterval(refreshData, 5000)", availability_map.MAP_JS)
+        self.assertIn("setInterval(renderStatus, 60_000)", availability_map.MAP_JS)
+        self.assertIn("function refreshOpenCard()", availability_map.MAP_JS)
+        self.assertEqual(availability_map._handler().protocol_version, "HTTP/1.1")
 
 
 class CandidateDiscoveryTests(unittest.TestCase):
@@ -352,9 +487,9 @@ class CandidateDiscoveryTests(unittest.TestCase):
             def __init__(self):
                 self.calls = []
 
-            def driving_distances_km(self, lat, lon, destinations):
+            def driving_routes(self, lat, lon, destinations):
                 self.calls.append((lat, lon, destinations))
-                return [72.5, 95.0]
+                return [(72.5, 4_500), (95.0, 6_000)]
 
         base = {
             "entity_type": "campground",
@@ -380,7 +515,29 @@ class CandidateDiscoveryTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in candidates], ["123"])
         self.assertEqual(candidates[0]["distance_method"], "driving")
         self.assertEqual(candidates[0]["distance_km"], 72.5)
+        self.assertEqual(candidates[0]["osrm_duration_seconds"], 4_500)
         self.assertEqual(len(router.calls), 1)
+
+    def test_wa_drive_mode_attaches_osrm_route_times(self):
+        class Router:
+            def driving_routes(self, _lat, _lon, destinations):
+                self.destinations = destinations
+                return [(12.3, 1_234), (None, None)]
+
+        parks, dropped = build_wa_parks.attach_osm_route_times(
+            [
+                {"name": "Routeable", "lat": 47.1, "lon": -122.1},
+                {"name": "No route", "lat": 47.2, "lon": -122.2},
+            ],
+            Router(),
+            home_lat=47.0,
+            home_lon=-122.0,
+        )
+        self.assertEqual(dropped, 1)
+        self.assertEqual(len(parks), 2)
+        self.assertEqual(parks[0]["osrm_duration_seconds"], 1_234)
+        self.assertEqual(parks[0]["drive_time_source"], "openstreetmap_osrm")
+        self.assertTrue(parks[1]["osrm_route_unavailable"])
 
 
 class WatchLogicTests(unittest.TestCase):
@@ -431,6 +588,16 @@ class WatchLogicTests(unittest.TestCase):
             self.assertFalse(watch.targets_in_watch_window(dt.date(2026, 1, 1)))
         with mock.patch.object(watch, "TARGET_WEEKENDS", []):
             self.assertIsNone(watch.recommended_poll_minutes(dt.date(2026, 8, 1)))
+
+    def test_availability_workers_have_small_safe_bounds(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"CAMPWATCH_RECGOV_WORKERS": "99", "CAMPWATCH_GTC_WORKERS": "0"},
+        ):
+            self.assertEqual(
+                watch.availability_worker_counts(),
+                (watch.REC_GOV_MAX_WORKERS, 1),
+            )
 
     def test_load_targets(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -598,6 +765,56 @@ class WatchLogicTests(unittest.TestCase):
                 {"rg:1": [saved_run], "rg:2": []},
             )
             self.assertEqual(json.loads(progress_file.read_text())["status"], "complete")
+
+    def test_main_runs_provider_pools_at_the_same_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_file = root / "watch_config.json"
+            config_file.write_text(
+                json.dumps(
+                    {
+                        "recdotgov": [{"id": 1, "name": "Federal", "dist_mi": 1}],
+                        "going_to_camp": [
+                            {
+                                "id": -2,
+                                "name": "State",
+                                "rec_area": 3,
+                                "root_map_id": -3,
+                            }
+                        ],
+                    }
+                )
+            )
+            rec_started = threading.Event()
+            gtc_started = threading.Event()
+            overlapped = []
+
+            def poll_rec(*_args):
+                rec_started.set()
+                overlapped.append(gtc_started.wait(1))
+                return {}
+
+            def poll_gtc(*_args, **_kwargs):
+                gtc_started.set()
+                overlapped.append(rec_started.wait(1))
+                return {}
+
+            with (
+                mock.patch.object(watch, "TARGET_WEEKENDS", None),
+                mock.patch.object(watch, "CONFIG", config_file),
+                mock.patch.object(watch, "STATE_FILE", root / "last_state.json"),
+                mock.patch.object(
+                    watch, "COMPLETE_STATE_FILE", root / "last_complete_state.json"
+                ),
+                mock.patch.object(watch, "SCAN_PROGRESS", root / "scan_progress.json"),
+                mock.patch.object(watch, "RecreationGovClient", return_value=mock.Mock()),
+                mock.patch.object(watch, "GoingToCampClient", return_value=mock.Mock()),
+                mock.patch.object(watch, "recgov_available_nights", side_effect=poll_rec),
+                mock.patch.object(watch, "gtc_available_nights", side_effect=poll_gtc),
+                mock.patch("builtins.print"),
+            ):
+                self.assertEqual(watch.main(), 0)
+            self.assertEqual(overlapped, [True, True])
 
 
 class FakeRecClient:
@@ -790,6 +1007,50 @@ class RunnerTests(unittest.TestCase):
             env = {}
             campwatch_config.load_private_settings(env, path)
             self.assertEqual(env["CAMPWATCH_WEBHOOK_URL"], "https://example.com/hook")
+
+    def test_home_coordinates_are_required_and_validated(self):
+        with self.assertRaises(RuntimeError):
+            campwatch_config.home_coordinates({})
+        self.assertEqual(
+            campwatch_config.home_coordinates(
+                {"CAMPWATCH_HOME_LAT": "47.68", "CAMPWATCH_HOME_LON": "-122.20"}
+            ),
+            (47.68, -122.2),
+        )
+        with self.assertRaises(RuntimeError):
+            campwatch_config.home_coordinates(
+                {"CAMPWATCH_HOME_LAT": "100", "CAMPWATCH_HOME_LON": "-122.20"}
+            )
+
+    def test_provider_rules_are_validated_as_data(self):
+        valid_rules = {
+            "recreation_gov": {
+                "state_code": "WA",
+                "state_name": "Washington",
+                "minimum_rating": 4,
+                "default_max_distance_km": 90,
+            },
+            "going_to_camp": {
+                "rec_areas": {"3": "State Parks"},
+                "non_camp_markers": ["TRAIL"],
+                "estimated_drive": {
+                    "max_hours": 2,
+                    "margin_hours": 0.25,
+                    "road_factor": 1.35,
+                    "average_kmh": 75,
+                },
+            },
+            "watch": {"group_markers": ["GROUP"]},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "provider_rules.json"
+            path.write_text(json.dumps(valid_rules))
+            rules = campwatch_config.load_provider_rules(path)
+            self.assertEqual(rules["going_to_camp"]["rec_areas"], {3: "State Parks"})
+            self.assertEqual(rules["watch"]["group_markers"], ("GROUP",))
+            path.write_text("{}")
+            with self.assertRaises(RuntimeError):
+                campwatch_config.load_provider_rules(path)
 
 
 if __name__ == "__main__":

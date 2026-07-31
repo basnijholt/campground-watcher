@@ -1,0 +1,55 @@
+{
+  "recreation_gov": {
+    "state_code": "WA",
+    "state_name": "Washington",
+    "minimum_rating": 4.0,
+    "default_max_distance_km": 90.0
+  },
+  "going_to_camp": {
+    "rec_areas": {
+      "3": "Washington State Parks",
+      "6": "Tacoma Power Parks"
+    },
+    "non_camp_markers": [
+      "TRAIL",
+      "OFFICE",
+      "REGION",
+      "OBSERVATORY",
+      "OBA",
+      "HERITAGE",
+      "INTERPRETIVE",
+      "DAY USE",
+      "DAY-USE",
+      "GEYSER",
+      "RETREAT CENTER",
+      "VISITORS CENTER",
+      "VISITOR CENTER",
+      "FRONT DESK",
+      "INFORMATION CENTER",
+      "INTERNET",
+      "HQ",
+      "CAMPUS OPERATIONS",
+      "DEPOT",
+      "PROPERTY",
+      " IC",
+      "WESTHAVEN",
+      "PALOUSE TO CASCADES"
+    ],
+    "estimated_drive": {
+      "max_hours": 2.0,
+      "margin_hours": 0.25,
+      "road_factor": 1.35,
+      "average_kmh": 75.0
+    }
+  },
+  "watch": {
+    "group_markers": [
+      "GROUP",
+      "GRP",
+      "HORSE CAMP",
+      "GROUP SITE",
+      "GROUP CAMP",
+      "OVERFLOW"
+    ]
+  }
+}

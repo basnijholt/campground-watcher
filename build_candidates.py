@@ -4,7 +4,7 @@
 Strategy:
 - Fetch metadata using either a statewide query (private default) or the
   provider's faster server-side proximity query.
-- Apply one common local validation pipeline with straight-line or road distance.
+- Apply one common local validation pipeline with straight-line or road route data.
 - Keep reservable overnight campgrounds rated >= 4 stars (or unrated).
 
 Writes candidates.json.
@@ -18,17 +18,16 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from campwatch_config import local_environment
+from campwatch_config import home_coordinates, load_provider_rules, local_environment
 from campwatch_http import OsmDrivingRouter, RecreationGovClient, atomic_write_json
 
-LOCAL_ENV = local_environment()
-HOME_LAT = float(LOCAL_ENV.get("CAMPWATCH_HOME_LAT", "47.6062"))
-HOME_LON = float(LOCAL_ENV.get("CAMPWATCH_HOME_LON", "-122.3321"))
-DEFAULT_MAX_DISTANCE_KM = 90.0
+RULES = load_provider_rules()
+RECREATION_GOV_RULES = RULES["recreation_gov"]
+DEFAULT_MAX_DISTANCE_KM = RECREATION_GOV_RULES["default_max_distance_km"]
 KM_PER_MILE = 1.609344
-MIN_RATING = 4.0
-STATE = "WA"
-STATE_NAME = "Washington"
+MIN_RATING = RECREATION_GOV_RULES["minimum_rating"]
+STATE = RECREATION_GOV_RULES["state_code"]
+STATE_NAME = RECREATION_GOV_RULES["state_name"]
 
 HERE = Path(__file__).parent
 OUT = HERE / "candidates.json"
@@ -163,18 +162,24 @@ def select_candidates(
     if distance_filter == "drive":
         if router is None:
             raise ValueError("a router is required for drive filtering")
-        routed_km = router.driving_distances_km(
+        routed_routes = router.driving_routes(
             home_lat, home_lon, [(candidate["lat"], candidate["lon"]) for candidate in candidates]
         )
-        if len(routed_km) != len(candidates):
+        if len(routed_routes) != len(candidates):
             raise RuntimeError("routing response did not match the candidate list")
         routed_candidates = []
-        for candidate, driving_km in zip(candidates, routed_km):
-            if driving_km is None or driving_km > max_distance_km:
+        for candidate, (driving_km, driving_seconds) in zip(candidates, routed_routes):
+            if (
+                driving_km is None
+                or driving_seconds is None
+                or driving_km > max_distance_km
+            ):
                 continue
             candidate["distance_km"] = round(driving_km, 1)
             candidate["dist_mi"] = round(driving_km / KM_PER_MILE, 1)
             candidate["driving_km"] = round(driving_km, 1)
+            candidate["osrm_duration_seconds"] = round(driving_seconds)
+            candidate["drive_time_source"] = "openstreetmap_osrm"
             candidate["distance_method"] = "driving"
             routed_candidates.append(candidate)
         candidates = routed_candidates
@@ -198,7 +203,7 @@ def main(argv: list[str] | None = None):
         help=(
             "client keeps coordinates local (default); server sends coordinates "
             "to recreation.gov for a faster proximity query; drive sends them "
-            "to OpenStreetMap routing for a road-distance cutoff"
+            "to OpenStreetMap routing for a road-distance/time cutoff"
         ),
     )
     parser.add_argument(
@@ -208,6 +213,7 @@ def main(argv: list[str] | None = None):
         help=f"distance cutoff in kilometers (default: {DEFAULT_MAX_DISTANCE_KM:g})",
     )
     args = parser.parse_args(argv)
+    home_lat, home_lon = home_coordinates(local_environment())
 
     if args.distance_filter == "server":
         print("Server filtering selected: sending coordinates to recreation.gov.")
@@ -225,14 +231,14 @@ def main(argv: list[str] | None = None):
     raw, calls = fetch_catalog(
         HTTP,
         distance_filter=args.distance_filter,
-        home_lat=HOME_LAT,
-        home_lon=HOME_LON,
+        home_lat=home_lat,
+        home_lon=home_lon,
         max_distance_km=args.max_distance_km,
     )
     candidates = select_candidates(
         raw,
-        home_lat=HOME_LAT,
-        home_lon=HOME_LON,
+        home_lat=home_lat,
+        home_lon=home_lon,
         max_distance_km=args.max_distance_km,
         distance_filter=args.distance_filter,
         router=OsmDrivingRouter() if args.distance_filter == "drive" else None,
