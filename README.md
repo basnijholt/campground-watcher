@@ -4,30 +4,32 @@ A small, cron-friendly watcher that polls **recreation.gov** and **Washington
 State Parks** (the GoingToCamp booking system) for campsite openings near you.
 When a completed poll finds a new matching opening, it records it and, if you
 configure a webhook, sends a notification. It is designed to catch
-**cancellations** for otherwise sold-out weekends and surface a ready-to-click
-booking link as soon as the next poll observes a spot.
+**cancellations** for otherwise sold-out weekends and surface the provider's
+availability page as soon as the next poll observes a spot.
 
 It is intentionally **not** LLM-driven: it is dependency-free Python you run on
 a timer. It installs nothing and uses only the Python standard library.
 
 > **Note:** the watcher *finds and notifies* about openings. It does not book for
 > you (recreation.gov and WA State Parks both require your own login to reserve).
-> You get a booking link; you click and book.
+> Provider links are a convenience for reviewing availability; they are not a
+> confirmation that a particular site can be reserved.
 
 ## Features
 
 - Monitors both recreation.gov campgrounds and WA State Parks in one pass.
-- **Occupancy cross-check for WA parks** — WA's map API reports walk-in / host /
-  non-web-bookable sites as "available"; this watcher verifies each candidate
-  against the booking site's `/api/occupancy` endpoint so you only get real,
-  web-bookable openings (no phantom sites).
+- **Occupancy filter for WA parks** — WA's map API reports walk-in / host /
+  other non-reservable resources as "available"; the watcher checks candidates
+  against the booking site's `/api/occupancy` endpoint to remove many of those
+  false positives. It is not a complete reservation-policy validation.
 - **Single-site, whole-stay matching** — a "Fri+Sat" weekend match means *one
   site* is open for *both* nights. It never stitches different sites/nights
   together.
 - **Target-weekend filter** — only alert for the specific weekend(s) you care
   about, or watch everything.
-- **Booking links for every opening** — Washington links pre-fill the stay dates
-  at the facility; recreation.gov links open the campground availability page.
+- **Provider review links** — Washington can pre-fill selected stay dates at the
+  facility; recreation.gov opens the campground availability page. Neither is a
+  booking confirmation.
 - **Change-only, idempotent, de-duplicated** notifications (won't spam you when
   WA availability flaps).
 - Distance filtering, rating filter (recreation.gov), group-site exclusion.
@@ -90,19 +92,27 @@ server watches the atomic scan checkpoint files: a checkpoint-only change update
 the status line, while a changed availability fingerprint causes one full map-data
 fetch and marker/list update. It does not repeatedly fetch unchanged availability
 data. Markers represent campgrounds with qualifying availability; their one
-floating detail card shows the number of distinct sites, available date span,
-distance, and direct booking links. Hover or focus a marker to open the full
+floating detail card shows the number of distinct sites, observed date span,
+distance, and provider-review links. Hover or focus a marker to open the full
 scrollable card, then use its pin button to keep it open. The card can be dragged
 by its header and resized from its lower-right corner; × or Escape closes it.
 Selecting a marker or a campground in the list opens and pins the same card. The
-From/Through fields and 7-day, 30-day, and full-window presets filter both the
-campground list and map markers locally without another provider scan.
+check-in-date fields update the campground list, map markers, and any open card
+immediately, locally, without another provider scan. Leave stay length blank to
+browse every recorded option; set it (for example, to two nights) to count only
+sites whose runs cover that stay at each selected check-in date. Each scan now
+records its inclusive checked-night window separately from positive availability.
+The map displays that window and warns when a selection is wholly or partly
+outside it: un-checked dates are always shown as unknown, never unavailable.
+The 7-day, 30-day, and full-window presets set the same check-in range.
 Drag an empty part of the map to pan. Hover the map and use the mouse wheel or
 double-click to zoom; the +/− controls work too. When the map has keyboard focus,
 the arrow keys pan, +/− zoom, and Home fits the currently displayed campgrounds.
 Long availability tables scroll inside the card while keeping the campground name
 and column headers visible. Results are grouped by check-in day: each compact,
-directly-bookable stay chip shows its nights and available-site count. The status
+observed-stay chip shows its nights and observed-site count. The card offers a
+separate provider-review link, rather than presenting the chip as a booking
+link. The status
 bar reports a warning whenever scan data has not changed for more than one hour.
 It also reports when the local event stream disconnects and reconnects
 automatically after the map server is restarted. When a scan is marked failed, or
@@ -117,10 +127,26 @@ event.
 For Washington State Parks, GoingToCamp supplies opaque internal resource IDs
 instead of useful campsite labels. The map hides those IDs and groups identical
 availability windows, showing the number of sites available for each date range.
-Every stay chip is a booking link. Washington links open the provider with that
-stay's dates selected; recreation.gov opens the campground's availability page.
-Recreation.gov does not offer a reliable row-specific deep link, so choose the
-shown site and dates there.
+Washington review links can open the provider with a selected stay's dates;
+recreation.gov opens the campground's availability page. Recreation.gov does
+not offer a reliable row-specific deep link, so choose the shown site and dates
+there.
+
+Changing dates or a stay length uses the already-downloaded local scan result and
+makes no provider request. It labels those results as **observed availability**,
+not a completed reservation. Without a selected stay length, the map preserves
+the observed consecutive run; with a selected date and length, it counts sites
+whose saved run covers that exact stay. Neither view is a bookable-site count.
+
+The current rules encode Washington State Parks' published 10-night-in-one-park
+within-30-days limit and 90-night annual statewide limit in
+`provider_rules.json`, with a link to its source. The map excludes a selected
+stay longer than 10 nights, but cannot check a visitor's prior reservations, so
+even a shorter WA stay is not confirmed bookable. Recreation.gov and Tacoma Power
+have no configured blanket stay cap: their long runs remain visible as observed
+availability, with the booking limit unknown. A campground that failed during
+the latest scan is visibly marked as not rechecked; its current availability is
+unknown rather than treated as newly checked.
 Press Ctrl-C in the map server's terminal to stop it.
 
 The map installs no Python package and loads no third-party JavaScript. While the
@@ -185,10 +211,11 @@ clamped rather than creating a high-volume scan.
 ### Provider rules
 
 [`provider_rules.json`](provider_rules.json) holds the editable, non-secret
-data behind regional discovery: provider display labels, the campground and
-group-site name markers, candidate rating/distance defaults, and the local WA
-drive-estimation heuristic. This keeps policy/data out of Python while retaining
-the provider HTTPS allowlists and API schemas in code as a security boundary.
+data behind regional discovery: provider display labels, known published
+stay-length limits, the campground and group-site name markers, candidate
+rating/distance defaults, and the local WA drive-estimation heuristic. This
+keeps policy/data out of Python while retaining the provider HTTPS allowlists and
+API schemas in code as a security boundary.
 
 For a scheduled job, webhook settings can instead live in the Git-ignored
 `secrets/config.json` file. The runner refuses to read it unless it has mode 600:
@@ -339,7 +366,7 @@ scheduler interval.
 | `build_wa_parks.py` | Regenerate the WA State Parks list within a drive radius. |
 | `discover_gtc.py` | Helper to list GoingToCamp facility/map IDs. |
 | `candidates.json` / `wa_parks.json` / `gtc_campgrounds.json` | Reference data. |
-| `report.py` | Print everything currently bookable, ranked by distance. |
+| `report.py` | Print everything with recorded availability, ranked by distance. |
 | `weekend.py` | Print sites open for a given weekend (single-site, whole-stay). |
 | `run_watch.py` | Portable overlap lock, adaptive runner, and log rotation. |
 | `run_watch.sh` | Compatibility launcher that locates Python by absolute path. |
@@ -353,7 +380,9 @@ scheduler interval.
   a time, so a single site may not always cover a full weekend — that's why the
   weekend filter requires one site to cover *all* requested nights.
 - WA State Parks availability is read directly from GoingToCamp's public JSON
-  endpoints and fails closed if the authoritative occupancy check is unavailable.
+  endpoints and fails closed if its occupancy filter is unavailable. That filter
+  is useful but does not validate every reservation rule; the configured
+  Washington State Parks 10-night cap is applied separately.
 - GoingToCamp currently rejects Python's default user agent at its web firewall,
   so the client sends a static browser-compatible user agent. It is not a token
   or identity, but it is an upstream compatibility dependency: a WAF change can

@@ -271,6 +271,12 @@ class AvailabilityMapTests(unittest.TestCase):
                         "status": "running",
                         "completed": 4,
                         "total": 10,
+                        "coverage": {
+                            "first_night": "2026-08-01",
+                            "last_night": "2026-10-29",
+                        },
+                        "completed_keys": ["rg:1", "wa:-2"],
+                        "failed_keys": ["rg:1"],
                         "signature": "private-internal-value",
                         "pid": 123,
                     }
@@ -300,10 +306,18 @@ class AvailabilityMapTests(unittest.TestCase):
             self.assertEqual(len(data["locations"][0]["runs"]), 14)
             self.assertIn("recreation.gov", data["locations"][0]["booking_url"])
             self.assertIn("goingtocamp.com", data["locations"][1]["booking_url"])
+            self.assertEqual(data["locations"][1]["stay_limit"]["max_nights"], 10)
+            self.assertEqual(data["locations"][1]["stay_limit"]["park_window_days"], 30)
             self.assertEqual(data["locations"][0]["osrm_duration_seconds"], 960)
             self.assertEqual(data["locations"][1]["osrm_duration_seconds"], 1_440)
+            self.assertFalse(data["locations"][0]["checked_this_scan"])
+            self.assertTrue(data["locations"][1]["checked_this_scan"])
+            self.assertEqual(data["failed_keys"], ["rg:1"])
             self.assertEqual(data["progress"], {
                 "status": "running", "completed": 4, "total": 10
+            })
+            self.assertEqual(data["coverage"], {
+                "first_night": "2026-08-01", "last_night": "2026-10-29"
             })
             self.assertNotIn("signature", data["progress"])
             self.assertIsNotNone(data["data_updated_at"])
@@ -386,11 +400,24 @@ class AvailabilityMapTests(unittest.TestCase):
         self.assertIn("© OpenStreetMap contributors", availability_map.MAP_HTML)
         self.assertIn('id="date-from" type="date"', availability_map.MAP_HTML)
         self.assertIn('id="date-through" type="date"', availability_map.MAP_HTML)
+        self.assertIn('id="stay-nights" type="number"', availability_map.MAP_HTML)
+        self.assertNotIn('id="stay-nights" type="number" min="1" max=', availability_map.MAP_HTML)
+        self.assertIn('id="coverage-notice"', availability_map.MAP_HTML)
+        self.assertIn('id="stay-limit-notice"', availability_map.MAP_HTML)
+        self.assertIn("Results update immediately from saved scans.", availability_map.MAP_HTML)
         self.assertIn('id="availability-card" role="dialog"', availability_map.MAP_HTML)
         self.assertIn('className = "run-table"', availability_map.MAP_JS)
-        self.assertIn('["Check in", "Available stays"]', availability_map.MAP_JS)
+        self.assertIn('["Check in", "Observed stays"]', availability_map.MAP_JS)
         self.assertIn('function availabilityDateGroups(location)', availability_map.MAP_JS)
+        self.assertIn('function coverageState()', availability_map.MAP_JS)
+        self.assertIn('function selectedStayNights()', availability_map.MAP_JS)
+        self.assertIn('function stayLimitFor(location)', availability_map.MAP_JS)
+        self.assertIn('function renderStayLimitNotice()', availability_map.MAP_JS)
+        self.assertIn('for (let checkIn = run.first_check_in;', availability_map.MAP_JS)
         self.assertIn('function makeStayChip(location, run)', availability_map.MAP_JS)
+        self.assertIn('This is not a provider-validated booking.', availability_map.MAP_JS)
+        self.assertIn('function reviewUrlFor(location, run = null)', availability_map.MAP_JS)
+        self.assertNotIn('function bookingUrlFor(', availability_map.MAP_JS)
         self.assertIn('function formatCheckInDate(value)', availability_map.MAP_JS)
         self.assertIn('checkIn.textContent = formatCheckInDate(group.checkIn)', availability_map.MAP_JS)
         self.assertIn('function formatDriveDuration(seconds)', availability_map.MAP_JS)
@@ -418,6 +445,7 @@ class AvailabilityMapTests(unittest.TestCase):
         self.assertNotIn("setInterval(refreshData, 5000)", availability_map.MAP_JS)
         self.assertIn("setInterval(renderStatus, 60_000)", availability_map.MAP_JS)
         self.assertIn("function refreshOpenCard()", availability_map.MAP_JS)
+        self.assertIn("renderMarkers();\n  refreshOpenCard();", availability_map.MAP_JS)
         self.assertEqual(availability_map._handler().protocol_version, "HTTP/1.1")
 
     def test_map_handler_silently_ignores_client_disconnects(self):
@@ -709,6 +737,30 @@ class WatchLogicTests(unittest.TestCase):
                 )
                 self.assertEqual(watch._load_resume_checkpoint("changed-scan"), ([], {}))
 
+    def test_resume_retries_a_target_that_failed_in_the_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            progress_file = Path(tmp) / "scan_progress.json"
+            state_file = Path(tmp) / "last_state.json"
+            state_file.write_text(json.dumps({"rg:1": ["saved"], "rg:2": ["stale"]}))
+            progress_file.write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "signature": "same-scan",
+                        "completed_keys": ["rg:1", "rg:2"],
+                        "failed_keys": ["rg:2"],
+                    }
+                )
+            )
+            with (
+                mock.patch.object(watch, "SCAN_PROGRESS", progress_file),
+                mock.patch.object(watch, "STATE_FILE", state_file),
+            ):
+                self.assertEqual(
+                    watch._load_resume_checkpoint("same-scan"),
+                    (["rg:1"], {"rg:1": ["saved"]}),
+                )
+
     def test_resumed_state_rebuilds_summary_and_new_alerts(self):
         cfg = {
             "recdotgov": [
@@ -721,6 +773,23 @@ class WatchLogicTests(unittest.TestCase):
             summary, alerts = watch._summary_from_state(cfg, state, {})
         self.assertEqual(summary[0]["runs"][0]["site"], "A")
         self.assertEqual(alerts[0]["new_runs"], ["A|2026-08-07|2"])
+
+    def test_wa_summary_caps_display_and_booking_link_to_known_stay_limit(self):
+        cfg = {
+            "recdotgov": [],
+            "going_to_camp": [
+                {"id": -2, "name": "State Park", "rec_area": 3, "root_map_id": -3}
+            ],
+        }
+        state_key = "-20|2026-08-23|39"
+        with mock.patch.object(watch, "TARGET_WEEKENDS", None):
+            summary, alerts = watch._summary_from_state(cfg, {"wa:-2": [state_key]}, {})
+        run = summary[0]["runs"][0]
+        self.assertEqual(run["nights"], 10)
+        self.assertEqual(run["observed_nights"], 39)
+        self.assertEqual(run["max_stay_nights"], 10)
+        self.assertIn("endDate=2026-09-02", run["booking_url"])
+        self.assertEqual(alerts[0]["new_runs"], [state_key])
 
     def test_main_skips_targets_from_a_compatible_resume_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -773,6 +842,10 @@ class WatchLogicTests(unittest.TestCase):
                 {"rg:1": [saved_run], "rg:2": []},
             )
             self.assertEqual(json.loads(progress_file.read_text())["status"], "complete")
+            self.assertEqual(json.loads(progress_file.read_text())["coverage"], {
+                "first_night": today.isoformat(),
+                "last_night": (today + dt.timedelta(days=watch.WINDOW_DAYS - 1)).isoformat(),
+            })
 
     def test_main_runs_provider_pools_at_the_same_time(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1040,6 +1113,15 @@ class RunnerTests(unittest.TestCase):
             },
             "going_to_camp": {
                 "rec_areas": {"3": "State Parks"},
+                "stay_limits": {
+                    "3": {
+                        "max_nights": 10,
+                        "park_window_days": 30,
+                        "calendar_year_max_nights": 90,
+                        "label": "State Parks camping",
+                        "source_url": "https://example.com/policy",
+                    }
+                },
                 "non_camp_markers": ["TRAIL"],
                 "estimated_drive": {
                     "max_hours": 2,
@@ -1055,6 +1137,8 @@ class RunnerTests(unittest.TestCase):
             path.write_text(json.dumps(valid_rules))
             rules = campwatch_config.load_provider_rules(path)
             self.assertEqual(rules["going_to_camp"]["rec_areas"], {3: "State Parks"})
+            self.assertEqual(rules["going_to_camp"]["stay_limits"][3]["max_nights"], 10)
+            self.assertEqual(rules["going_to_camp"]["stay_limits"][3]["park_window_days"], 30)
             self.assertEqual(rules["watch"]["group_markers"], ("GROUP",))
             path.write_text("{}")
             with self.assertRaises(RuntimeError):

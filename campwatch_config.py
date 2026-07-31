@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,20 @@ def _positive_number(value: Any, description: str) -> float:
     if number <= 0:
         raise RuntimeError(f"provider_rules.json requires a positive {description}")
     return number
+
+
+def _positive_integer(value: Any, description: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise RuntimeError(f"provider_rules.json requires a positive integer {description}")
+    return value
+
+
+def _https_url(value: Any, description: str) -> str:
+    url = _required_string(value, description)
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise RuntimeError(f"provider_rules.json requires an HTTPS {description}")
+    return url
 
 
 def _string_list(value: Any, description: str) -> tuple[str, ...]:
@@ -71,6 +86,37 @@ def load_provider_rules(path: Path = PROVIDER_RULES_FILE) -> dict[str, Any]:
             raise RuntimeError("provider_rules.json rec-area IDs must be positive")
         rec_areas[parsed_area_id] = _required_string(label, "rec-area label")
 
+    raw_stay_limits = going_to_camp.get("stay_limits", {})
+    if not isinstance(raw_stay_limits, dict):
+        raise RuntimeError("provider_rules.json requires going_to_camp.stay_limits as an object")
+    stay_limits = {}
+    for area_id, rule in raw_stay_limits.items():
+        try:
+            parsed_area_id = int(area_id)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("provider_rules.json stay-limit rec-area IDs must be integers") from exc
+        if parsed_area_id not in rec_areas or not isinstance(rule, dict):
+            raise RuntimeError("provider_rules.json stay limits must target a configured rec area")
+        stay_limits[parsed_area_id] = {
+            "max_nights": _positive_integer(
+                rule.get("max_nights"), "going_to_camp.stay_limits.max_nights"
+            ),
+            "park_window_days": _positive_integer(
+                rule.get("park_window_days"),
+                "going_to_camp.stay_limits.park_window_days",
+            ),
+            "calendar_year_max_nights": _positive_integer(
+                rule.get("calendar_year_max_nights"),
+                "going_to_camp.stay_limits.calendar_year_max_nights",
+            ),
+            "label": _required_string(
+                rule.get("label"), "going_to_camp.stay_limits.label"
+            ),
+            "source_url": _https_url(
+                rule.get("source_url"), "going_to_camp.stay_limits.source_url"
+            ),
+        }
+
     estimated_drive = going_to_camp.get("estimated_drive")
     if not isinstance(estimated_drive, dict):
         raise RuntimeError("provider_rules.json requires going_to_camp.estimated_drive")
@@ -92,6 +138,7 @@ def load_provider_rules(path: Path = PROVIDER_RULES_FILE) -> dict[str, Any]:
         },
         "going_to_camp": {
             "rec_areas": rec_areas,
+            "stay_limits": stay_limits,
             "non_camp_markers": _string_list(
                 going_to_camp.get("non_camp_markers"), "going_to_camp.non_camp_markers"
             ),

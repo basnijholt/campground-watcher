@@ -48,13 +48,15 @@ from campwatch_http import (
 #   3. MAPDATA on each child map (getDailyAvailability=True) returns
 #      resourceAvailabilities: {resourceId: [ {availability: 1|2|3|...}, ... ]}
 #      where the slot list is one entry per night in [start, end), in order.
-#   availability == 0 means that night is a candidate; occupancy confirms it.
+#   availability == 0 means that night is an availability candidate; occupancy
+#   removes several non-reservable resource types but is not a full transaction
+#   or policy validation.
 NON_GROUP_EQUIPMENT = -32768
 
 # GoingToCamp daily-availability "available" code.
 # Empirically decoded 2026-06-15 by comparing in-season vs winter code
 # distributions across many parks AND cross-checking a known-closed park:
-#   0 = AVAILABLE (bookable)  -- present in-season, varies by date
+#   0 = AVAILABLE candidate   -- present in-season, varies by date
 #   1 = booked/reserved       -- present in-season, absent in far winter
 #   2 = NOT OPERATING/closed  -- CONSTANT all dates (e.g. Saltwater = all 2)
 #   3 = not in season / not yet released
@@ -65,9 +67,9 @@ _GTC_AVAILABLE = 0
 
 # GoingToCamp occupancy "available" code (separate enum from MAPDATA).
 #   0 = Available, 1 = Filtered, 2 = Unavailable
-# The booking site's frontend uses /api/occupancy as the source of truth for
-# what is actually web-bookable. A site can be MAPDATA-available (0) yet NOT
-# web-bookable (walk-in / host / hold) -- occupancy is what filters those out.
+# A site can be MAPDATA-available (0) yet excluded by the occupancy endpoint
+# (walk-in / host / hold). This endpoint does not enforce every booking policy,
+# such as the Washington State Parks maximum stay length.
 _GTC_OCCUPANCY_AVAILABLE = 0
 
 # Per-rec-area caches so we hit the metadata endpoints once.
@@ -77,7 +79,7 @@ _gtc_metadata_cache_lock = threading.Lock()
 
 
 class AvailabilityVerificationError(RuntimeError):
-    """The authoritative occupancy endpoint could not verify a park."""
+    """The occupancy endpoint could not check a park's candidate sites."""
 
 
 def _rootmap_index(client, rec_area_id):
@@ -128,8 +130,8 @@ def _default_sub_equipment(client, rec_area_id):
     return _sub_equipment_cache[rec_area_id]
 
 
-def _bookable_resource_ids(client, rec_area_id, fid, start, end):
-    """Return resourceIds that the authoritative occupancy API says are bookable."""
+def _occupancy_available_resource_ids(client, rec_area_id, fid, start, end):
+    """Return resource IDs marked available by occupancy, not a final booking guarantee."""
     occ_filter = {
         "bookingCategoryId": 0,
         "equipmentCategoryId": NON_GROUP_EQUIPMENT,
@@ -185,7 +187,7 @@ def _gtc_mapdata(client, rec_area_id, map_id, fid, start, end):
 
 
 def gtc_available_nights(rec_area_id, fid, start, end, root_map_id=None, client=None):
-    """Return {resource_label: set(date)} of open nights for a WA park facility.
+    """Return {resource_label: set(date)} of observed open nights for a WA facility.
 
     Uses MAPDATA directly. root_map_id may be supplied from config to skip the
     per-area index lookup.
@@ -200,9 +202,9 @@ def gtc_available_nights(rec_area_id, fid, start, end, root_map_id=None, client=
     n_days = (end - start).days
 
     # ---- Step 1: MAPDATA sweep over the whole window (cheap, gives candidates).
-    # MAPDATA availability == 0 is NECESSARY but NOT SUFFICIENT -- it also flags
-    # walk-in / host / non-web-bookable sites as 0. We treat these as candidates
-    # only and confirm each one via /api/occupancy below.
+    # MAPDATA availability == 0 is necessary but not sufficient -- it also flags
+    # walk-in / host / non-reservable sites as 0. We treat these as candidates
+    # and remove occupancy-excluded resources below.
     cand: dict[str, set] = {}  # resourceId(str) -> set(open dates)
     root = _gtc_mapdata(client, rec_area_id, root_map_id, fid, start, end)
     child_map_ids = list((root.get("mapLinkAvailabilities") or {}).keys())
@@ -224,19 +226,18 @@ def gtc_available_nights(rec_area_id, fid, start, end, root_map_id=None, client=
     if not cand:
         return {}
 
-    # ---- Step 2: occupancy-verify per consecutive run.
-    # /api/occupancy is the booking site's source of truth for web-bookability,
-    # but it must be queried per *stay window* (a 90-day occupancy query returns
-    # nothing). So for each candidate site's consecutive run (>= MIN_NIGHTS), do
-    # one short-window occupancy call and keep the run only if the site is in the
-    # bookable set for that exact window. Results cached per window to dedupe.
+    # ---- Step 2: occupancy-filter per consecutive run.
+    # It must be queried per *stay window* (a 90-day occupancy query returns
+    # nothing). For each candidate consecutive run (>= MIN_NIGHTS), keep the run
+    # only if its resource is returned as available for that exact window. This
+    # still does not validate provider policy limits or a signed-in transaction.
     occ_cache: dict[tuple, set[str]] = {}
 
     def occ_set(w_start, w_end):
         ck = (w_start, w_end)
         if ck not in occ_cache:
             try:
-                occ_cache[ck] = _bookable_resource_ids(
+                occ_cache[ck] = _occupancy_available_resource_ids(
                     client, rec_area_id, fid, w_start, w_end
                 )
             except Exception as exc:  # noqa: BLE001
@@ -293,7 +294,7 @@ REC_GOV_REQUEST_INTERVAL_SECONDS = 0.125
 GTC_REQUEST_INTERVAL_SECONDS = 0.25
 
 # ---- instant notifications via a generic webhook ----
-# On each new occupancy-verified opening, POST a JSON payload to an optional
+# On each new observed opening, POST a JSON payload to an optional
 # webhook URL. Set CAMPWATCH_WEBHOOK_URL to a Discord/Slack/ntfy/Telegram/
 # custom endpoint. If unset, notifications are skipped (the watcher still
 # writes openings to alerts.jsonl and you can read them with report.py /
@@ -490,6 +491,9 @@ def _write_scan_progress(
     total: int,
     signature: str,
     completed_keys: list[str],
+    failed_keys: list[str],
+    coverage_first_night: str,
+    coverage_last_night: str,
     last_target: str | None = None,
 ) -> None:
     now = dt.datetime.now().astimezone().isoformat(timespec="seconds")
@@ -501,6 +505,11 @@ def _write_scan_progress(
         "total": total,
         "signature": signature,
         "completed_keys": completed_keys,
+        "failed_keys": sorted(set(failed_keys)),
+        "coverage": {
+            "first_night": coverage_first_night,
+            "last_night": coverage_last_night,
+        },
         "pid": os.getpid(),
     }
     if last_target is not None:
@@ -561,7 +570,11 @@ def _load_resume_checkpoint(signature: str) -> tuple[list[str], dict]:
         keys = progress.get("completed_keys")
         if not isinstance(snapshot, dict) or not isinstance(keys, list):
             return [], {}
-        completed = [str(key) for key in keys if str(key) in snapshot]
+        failed = {str(key) for key in progress.get("failed_keys", [])}
+        completed = [
+            str(key) for key in keys
+            if str(key) in snapshot and str(key) not in failed
+        ]
         return completed, {key: snapshot[key] for key in completed}
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return [], {}
@@ -678,8 +691,10 @@ def send_trigger(name: str, url: str, new_runs: list[str], runs: list[dict]) -> 
 
     # Build a human message: one line per open SITE, each with its own deep
     # link (pre-filled with the stay dates) so you can jump straight to booking.
-    # new_runs are "site|start|nights" keys.
-    by_key = {f"{r['site']}|{r['start']}|{r['nights']}": r for r in runs}
+    # ``new_runs`` identifies raw watcher state.  A provider policy can cap the
+    # displayed/linked duration, so it must not be reconstructed from the
+    # user-facing duration.
+    by_key = {r["state_key"]: r for r in runs}
     lines = []
     sites_data = []
     for k in new_runs:
@@ -688,18 +703,26 @@ def send_trigger(name: str, url: str, new_runs: list[str], runs: list[dict]) -> 
             continue
         wk = f" [{r['weekend']}]" if r.get("weekend") and r["weekend"] != "all" else ""
         link = r.get("booking_url") or url
+        limit_note = ""
+        if r.get("observed_nights"):
+            limit_note = (
+                f" (observed {r['observed_nights']} consecutive open nights; "
+                f"capped at the known {r['max_stay_nights']}-night provider limit)"
+            )
         lines.append(
-            f"\u2022 Site {r['site']}: {r['nights']} nights from {r['start']}{wk}\n  {link}"
+            f"\u2022 Site {r['site']}: {r['nights']} nights from {r['start']}{wk}{limit_note}\n  {link}"
         )
-        sites_data.append(
-            {
-                "site": r["site"],
-                "start": r["start"],
-                "nights": r["nights"],
-                "weekend": r.get("weekend"),
-                "booking_url": link,
-            }
-        )
+        site_data = {
+            "site": r["site"],
+            "start": r["start"],
+            "nights": r["nights"],
+            "weekend": r.get("weekend"),
+            "booking_url": link,
+        }
+        if r.get("observed_nights"):
+            site_data["observed_nights"] = r["observed_nights"]
+            site_data["max_stay_nights"] = r["max_stay_nights"]
+        sites_data.append(site_data)
     detail = "\n".join(lines) if lines else "; ".join(new_runs)
     message = f"\U0001f3d5\ufe0f NEW availability at {name}\n{detail}"
 
@@ -881,22 +904,28 @@ def _summary_from_state(cfg: dict, state: dict, previous: dict):
     """Rebuild human/alert details so resumed targets need not be polled again."""
     summary = []
     new_alerts = []
+    stay_limits = load_provider_rules()["going_to_camp"]["stay_limits"]
 
-    def add_entry(key, name, rating, dist_mi, url, link_fn=None):
+    def add_entry(key, name, rating, dist_mi, url, link_fn=None, max_stay_nights=None):
         run_keys = state.get(key, [])
         if not run_keys:
             return
         runs = []
         for run_key in run_keys:
             site, start_text, nights_text = run_key.rsplit("|", 2)
-            nights = int(nights_text)
+            observed_nights = int(nights_text)
+            nights = min(observed_nights, max_stay_nights or observed_nights)
             weekend = covers_target_weekend(dt.date.fromisoformat(start_text), nights)
             run = {
                 "site": site,
                 "start": start_text,
                 "nights": nights,
                 "weekend": weekend,
+                "state_key": run_key,
             }
+            if nights != observed_nights:
+                run["observed_nights"] = observed_nights
+                run["max_stay_nights"] = max_stay_nights
             if link_fn is not None:
                 try:
                     run["booking_url"] = link_fn(site, start_text, nights)
@@ -935,8 +964,10 @@ def _summary_from_state(cfg: dict, state: dict, previous: dict):
         )
     for campground in cfg["going_to_camp"]:
         facility_id = campground["id"]
-        domain = GTC_HOSTS[int(campground["rec_area"])]
+        rec_area = int(campground["rec_area"])
+        domain = GTC_HOSTS[rec_area]
         map_id = campground.get("root_map_id")
+        stay_limit = stay_limits.get(rec_area)
         add_entry(
             f"wa:{facility_id}",
             campground["name"] + " (WA State Park)",
@@ -946,6 +977,7 @@ def _summary_from_state(cfg: dict, state: dict, previous: dict):
             link_fn=lambda site, start_text, nights, _map=map_id, _facility=facility_id, _domain=domain: gtc_booking_url(
                 _map, _facility, start_text, nights, domain=_domain
             ),
+            max_stay_nights=(stay_limit or {}).get("max_nights"),
         )
     return summary, new_alerts
 
@@ -968,10 +1000,12 @@ def main(*, scheduled: bool = False):
     cfg = json.loads(CONFIG.read_text()) if CONFIG.exists() else build_config()
     start = dt.date.today()
     end = start + dt.timedelta(days=WINDOW_DAYS)
+    coverage_last_night = end - dt.timedelta(days=1)
     log(
         f"Watching {len(cfg['recdotgov'])} rec.gov + "
         f"{len(cfg['going_to_camp'])} WA-State-Park campgrounds; "
-        f"window {start}..{end}, min {MIN_NIGHTS} nights; cadence {interval}m"
+        f"checked nights {start}..{coverage_last_night}, "
+        f"min {MIN_NIGHTS} nights; cadence {interval}m"
     )
 
     # Preserve the last fully completed result as the alert baseline. Incremental
@@ -989,6 +1023,7 @@ def main(*, scheduled: bool = False):
     signature = _scan_signature(cfg, start, end)
     completed_keys, new_state = _load_resume_checkpoint(signature)
     completed_key_set = set(completed_keys)
+    failed_keys: list[str] = []
     completed_targets = len(completed_keys)
     started_at = dt.datetime.now().astimezone().isoformat(timespec="seconds")
     last_target = None
@@ -1004,6 +1039,9 @@ def main(*, scheduled: bool = False):
         total=total_targets,
         signature=signature,
         completed_keys=completed_keys,
+        failed_keys=failed_keys,
+        coverage_first_night=start.isoformat(),
+        coverage_last_night=coverage_last_night.isoformat(),
     )
 
     def checkpoint(key: str, name: str):
@@ -1021,6 +1059,9 @@ def main(*, scheduled: bool = False):
             total=total_targets,
             signature=signature,
             completed_keys=completed_keys,
+            failed_keys=failed_keys,
+            coverage_first_night=start.isoformat(),
+            coverage_last_night=coverage_last_night.isoformat(),
             last_target=name,
         )
         log(f"  [{completed_targets}/{total_targets}] checked {name}")
@@ -1108,6 +1149,7 @@ def main(*, scheduled: bool = False):
                                     f"  WARN rec.gov #{cid} {cg['name']}: "
                                     f"{_http_error_label(error)}"
                                 )
+                                failed_keys.append(key)
                                 new_state[key] = prev_state.get(key, [])
                             else:
                                 process(key, by_site)
@@ -1119,6 +1161,7 @@ def main(*, scheduled: bool = False):
                                     f"  WARN WA park {cg['name']} ({fid}): "
                                     f"{_http_error_label(error)}"
                                 )
+                                failed_keys.append(key)
                                 new_state[key] = prev_state.get(key, [])
                             else:
                                 process(key, by_site)
@@ -1131,6 +1174,9 @@ def main(*, scheduled: bool = False):
             total=total_targets,
             signature=signature,
             completed_keys=completed_keys,
+            failed_keys=failed_keys,
+            coverage_first_night=start.isoformat(),
+            coverage_last_night=coverage_last_night.isoformat(),
             last_target=last_target,
         )
         raise
@@ -1154,6 +1200,9 @@ def main(*, scheduled: bool = False):
         total=total_targets,
         signature=signature,
         completed_keys=completed_keys,
+        failed_keys=failed_keys,
+        coverage_first_night=start.isoformat(),
+        coverage_last_night=coverage_last_night.isoformat(),
         last_target=last_target,
     )
 

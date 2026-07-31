@@ -25,6 +25,11 @@
     .date-fields label { display: grid; gap: 3px; color: #536158; font-size: 11px; font-weight: 650; }
     .date-fields input { width: 100%; min-width: 0; padding: 6px; border: 1px solid #aaa69b; border-radius: 6px;
       background: white; color: #17211a; font: inherit; font-size: 12px; }
+    .stay-field { grid-column: 1 / -1; }
+    .filter-hint { margin: 7px 0 0; color: #536158; font-size: 11px; line-height: 1.35; }
+    .coverage-notice { margin: 7px 0 0; padding: 6px 7px; border: 1px solid #bfd1c4; border-radius: 6px;
+      background: #edf5ee; color: #294536; font-size: 11px; line-height: 1.35; }
+    .coverage-notice.warning { border-color: #e0b86d; background: #fff5dc; color: #694809; }
     #presets { display: flex; gap: 5px; margin-top: 8px; }
     #presets button { flex: 1; padding: 5px 3px; border: 1px solid #aaa69b; border-radius: 6px; background: white;
       color: #284034; cursor: pointer; font-size: 11px; }
@@ -66,6 +71,8 @@
     #card-content a { color: #075b36; font-weight: 650; }
     #card-content .card-provider { margin-top: 8px; color: #536158; font-size: 11px; }
     #card-content .drive-note { margin-top: 1px; color: #536158; font-size: 11px; }
+    #card-content .stay-limit { color: #536158; font-size: 11px; }
+    #card-content .verification-note { color: #694809; font-size: 11px; }
     .availability-table-block { display: flex; flex: 1; flex-direction: column; min-height: 120px; }
     .availability-table-block .run-table-shell { flex: 1; max-height: none; }
     .run-table-shell { max-height: min(390px, 56vh); margin: 8px 0 5px; overflow: auto; overscroll-behavior: contain;
@@ -82,7 +89,6 @@
     .stay-options { display: flex; flex-wrap: wrap; gap: 6px; }
     .stay-chip { display: inline-flex; align-items: center; min-height: 28px; padding: 3px 8px; border: 1px solid #28714c;
       border-radius: 999px; background: #eaf5ed; color: #075b36; font-weight: 750; line-height: 1.15; text-decoration: none; }
-    .stay-chip:hover, .stay-chip:focus-visible { border-color: #075b36; background: #cfe8d6; outline: 2px solid #a9d8bd; outline-offset: 1px; }
     .more-runs { margin: 5px 1px 8px; color: #536158; font-size: 11px; }
     #attribution { position: absolute; z-index: 5; right: 5px; bottom: 3px; padding: 2px 5px; background: #ffffffe8;
       font-size: 11px; }
@@ -100,11 +106,15 @@
   <main id="layout">
     <aside id="sidebar">
       <fieldset id="filters">
-        <legend>Dates to display</legend>
+        <legend>Check-in dates to display</legend>
         <div class="date-fields">
           <label>From <input id="date-from" type="date"></label>
           <label>Through <input id="date-through" type="date"></label>
+          <label class="stay-field">Stay length, nights <input id="stay-nights" type="number" min="1" inputmode="numeric" placeholder="Any length"></label>
         </div>
+        <p class="filter-hint">Results update immediately from saved scans. Choose a stay length to count sites with observed coverage for each check-in date; leave it blank to browse consecutive open nights. These counts are not provider-validated bookings.</p>
+        <p id="coverage-notice" class="coverage-notice" role="status"></p>
+        <p id="stay-limit-notice" class="coverage-notice warning" role="status" hidden></p>
         <div id="presets" aria-label="Date range presets">
           <button type="button" data-days="7">Next 7 days</button>
           <button type="button" data-days="30">Next 30 days</button>

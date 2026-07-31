@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from campwatch_config import PROVIDER_RULES_FILE, load_provider_rules
 from campwatch_http import GTC_HOSTS
 
 
@@ -58,7 +59,7 @@ def _source_revisions() -> tuple[tuple[int, int, int] | None, ...]:
     """Tokenize every local input that could alter map data."""
     return tuple(
         _file_revision(path)
-        for path in (CONFIG, STATE, PROGRESS, CANDIDATES, WA_PARKS)
+        for path in (CONFIG, STATE, PROGRESS, CANDIDATES, WA_PARKS, PROVIDER_RULES_FILE)
     )
 
 
@@ -102,6 +103,31 @@ def _parse_runs(values) -> list[dict]:
     return sorted(runs, key=lambda run: (run["start"], run["site"]))
 
 
+def _coverage(raw_progress: dict) -> dict | None:
+    """Return the inclusive checked-night window, if this is a new-format scan."""
+    value = raw_progress.get("coverage")
+    if not isinstance(value, dict):
+        return None
+    first = value.get("first_night")
+    last = value.get("last_night")
+    if not isinstance(first, str) or not isinstance(last, str):
+        return None
+    try:
+        if dt.date.fromisoformat(first) > dt.date.fromisoformat(last):
+            return None
+    except ValueError:
+        return None
+    return {"first_night": first, "last_night": last}
+
+
+def _scan_keys(raw_progress: dict, field: str) -> set[str] | None:
+    """Read checkpoint key lists without treating old progress files as complete."""
+    values = raw_progress.get(field)
+    if not isinstance(values, list):
+        return None
+    return {str(value) for value in values}
+
+
 def _gtc_booking_url(campground: dict, run: dict) -> str:
     rec_area = int(campground["rec_area"])
     domain = GTC_HOSTS[rec_area]
@@ -130,6 +156,8 @@ def _location_record(
     coordinates: tuple[float, float],
     runs: list[dict],
     booking_url: str,
+    stay_limit: dict | None = None,
+    checked_this_scan: bool | None = None,
 ) -> dict:
     sites = {run["site"] for run in runs}
     osrm_duration_seconds = campground.get("osrm_duration_seconds")
@@ -156,6 +184,8 @@ def _location_record(
         "latest_night": max(run["last_night"] for run in runs),
         "max_nights": max(run["nights"] for run in runs),
         "booking_url": booking_url,
+        "stay_limit": stay_limit,
+        "checked_this_scan": checked_this_scan,
         # The browser filters these locally. Keep every run so a short date
         # window cannot accidentally hide availability after the first page.
         "runs": runs,
@@ -169,6 +199,7 @@ def build_map_data(
     progress_path: Path = PROGRESS,
     candidates_path: Path = CANDIDATES,
     wa_parks_path: Path = WA_PARKS,
+    provider_rules_path: Path = PROVIDER_RULES_FILE,
 ) -> dict:
     """Join incremental availability with local campground coordinates."""
     config = _load_json(config_path, {"recdotgov": [], "going_to_camp": []})
@@ -176,6 +207,14 @@ def build_map_data(
     raw_progress = _load_json(progress_path, {})
     candidates = _load_json(candidates_path, [])
     wa_parks = _load_json(wa_parks_path, [])
+    provider_rules = load_provider_rules(provider_rules_path)
+    completed_keys = _scan_keys(raw_progress, "completed_keys")
+    failed_keys = _scan_keys(raw_progress, "failed_keys") or set()
+
+    def checked_this_scan(key: str) -> bool | None:
+        if completed_keys is None:
+            return None
+        return key in completed_keys and key not in failed_keys
 
     candidate_by_id = {str(item.get("id")): item for item in candidates}
     park_by_id = {str(item.get("facility_id")): item for item in wa_parks}
@@ -210,6 +249,7 @@ def build_map_data(
                     f"https://www.recreation.gov/camping/campgrounds/"
                     f"{campground_id}/availability"
                 ),
+                checked_this_scan=checked_this_scan(f"rg:{campground_id}"),
             )
         )
 
@@ -232,6 +272,12 @@ def build_map_data(
             booking_url = _gtc_booking_url(campground, runs[0])
         except (KeyError, TypeError, ValueError):
             booking_url = "https://washington.goingtocamp.com/"
+        try:
+            stay_limit = provider_rules["going_to_camp"]["stay_limits"].get(
+                int(campground["rec_area"])
+            )
+        except (KeyError, TypeError, ValueError):
+            stay_limit = None
         locations.append(
             _location_record(
                 key=f"wa:{campground_id}",
@@ -241,6 +287,8 @@ def build_map_data(
                 coordinates=coordinates,
                 runs=runs,
                 booking_url=booking_url,
+                stay_limit=stay_limit,
+                checked_this_scan=checked_this_scan(f"wa:{campground_id}"),
             )
         )
 
@@ -260,6 +308,7 @@ def build_map_data(
         for key in ("status", "completed", "total", "updated_at", "last_target")
         if key in raw_progress
     }
+    coverage = _coverage(raw_progress)
     data_updated_at = raw_progress.get("updated_at")
     if not isinstance(data_updated_at, str):
         try:
@@ -271,6 +320,8 @@ def build_map_data(
     availability = {
         "locations": locations,
         "bounds": bounds,
+        "coverage": coverage,
+        "failed_keys": sorted(failed_keys),
         "missing_coordinates": missing_coordinates,
     }
     availability_fingerprint = _fingerprint(availability)

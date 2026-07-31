@@ -41,6 +41,8 @@ const cardHeader = document.getElementById("card-header");
 const cardPin = document.getElementById("card-pin");
 const dateFrom = document.getElementById("date-from");
 const dateThrough = document.getElementById("date-through");
+const stayNights = document.getElementById("stay-nights");
+const coverageNotice = document.getElementById("coverage-notice");
 const freshness = document.getElementById("freshness");
 
 function addIsoDays(value, days) {
@@ -51,6 +53,62 @@ function addIsoDays(value, days) {
 
 function dayCount(start, end) {
   return Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86400000) + 1;
+}
+
+function minIsoDate(...values) {
+  return values.filter(Boolean).sort((left, right) => left.localeCompare(right))[0] || null;
+}
+
+function maxIsoDate(...values) {
+  const dates = values.filter(Boolean).sort((left, right) => left.localeCompare(right));
+  return dates.length ? dates[dates.length - 1] : null;
+}
+
+function selectedStayNights() {
+  const nights = Number(stayNights.value);
+  return Number.isSafeInteger(nights) && nights >= 1 ? nights : null;
+}
+
+function stayLimitFor(location) {
+  const limit = location.stay_limit;
+  const maxNights = Number(limit?.max_nights);
+  if (!Number.isInteger(maxNights) || maxNights < 1 || typeof limit?.label !== "string") return null;
+  const parkWindowDays = Number(limit?.park_window_days);
+  const annualMaxNights = Number(limit?.calendar_year_max_nights);
+  return {
+    ...limit,
+    max_nights: maxNights,
+    park_window_days: Number.isInteger(parkWindowDays) && parkWindowDays > 0 ? parkWindowDays : null,
+    calendar_year_max_nights: Number.isInteger(annualMaxNights) && annualMaxNights > 0 ? annualMaxNights : null,
+  };
+}
+
+function coverageBounds() {
+  const coverage = mapData?.coverage;
+  if (!coverage || typeof coverage.first_night !== "string" || typeof coverage.last_night !== "string") {
+    return null;
+  }
+  return coverage.first_night <= coverage.last_night ? coverage : null;
+}
+
+function selectedCoverageRange() {
+  const first = dateFrom.value;
+  const lastCheckIn = dateThrough.value;
+  if (!first || !lastCheckIn) return null;
+  const nights = selectedStayNights();
+  return {
+    first,
+    last: nights ? addIsoDays(lastCheckIn, nights - 1) : lastCheckIn,
+  };
+}
+
+function coverageState() {
+  const coverage = coverageBounds();
+  const selected = selectedCoverageRange();
+  if (!coverage || !selected) return "unknown";
+  if (selected.last < coverage.first_night || selected.first > coverage.last_night) return "outside";
+  if (selected.first < coverage.first_night || selected.last > coverage.last_night) return "partial";
+  return "covered";
 }
 
 function formatDate(value) {
@@ -77,59 +135,50 @@ function formatDriveDuration(seconds) {
   return hours ? `${hours}h ${remainingMinutes}m` : `${minutes}m`;
 }
 
-function availabilityRows(location) {
-  if (!location.key.startsWith("wa:")) {
-    return location.runs.map(run => ({...run, site_count: 1}));
-  }
-  const grouped = new Map();
-  location.runs.forEach(run => {
-    const key = `${run.display_start}|${run.display_end}`;
-    if (!grouped.has(key)) {
-      grouped.set(key, {
-        display_start: run.display_start,
-        display_end: run.display_end,
-        sites: new Set()
-      });
-    }
-    grouped.get(key).sites.add(run.site);
-  });
-  return [...grouped.values()]
-    .map(row => ({...row, site_count: row.sites.size}))
-    .sort((left, right) => left.display_start.localeCompare(right.display_start)
-      || left.display_end.localeCompare(right.display_end));
-}
-
 function availabilityDateGroups(location) {
   const grouped = new Map();
-  availabilityRows(location).forEach(run => {
-    if (!grouped.has(run.display_start)) grouped.set(run.display_start, new Map());
-    const stays = grouped.get(run.display_start);
-    if (!stays.has(run.display_end)) {
-      stays.set(run.display_end, {
-        display_start: run.display_start,
-        display_end: run.display_end,
-        site_count: 0,
+  function addObservedStay(checkIn, end, site) {
+    if (!grouped.has(checkIn)) grouped.set(checkIn, new Map());
+    const stays = grouped.get(checkIn);
+    if (!stays.has(end)) {
+      stays.set(end, {
+        display_start: checkIn,
+        display_end: end,
+        sites: new Set(),
       });
     }
-    stays.get(run.display_end).site_count += run.site_count;
+    stays.get(end).sites.add(site);
+  }
+
+  location.runs.forEach(run => {
+    if (!location.selected_nights) {
+      addObservedStay(run.display_start, run.display_end, run.site);
+      return;
+    }
+    for (let checkIn = run.first_check_in; checkIn <= run.last_check_in; checkIn = addIsoDays(checkIn, 1)) {
+      addObservedStay(checkIn, addIsoDays(checkIn, location.selected_nights - 1), run.site);
+    }
   });
   return [...grouped.entries()]
     .map(([checkIn, runs]) => ({
       checkIn,
-      runs: [...runs.values()].sort((left, right) => left.display_end.localeCompare(right.display_end)),
+      runs: [...runs.values()]
+        .map(run => ({...run, site_count: run.sites.size}))
+        .sort((left, right) => left.display_end.localeCompare(right.display_end)),
     }))
     .sort((left, right) => left.checkIn.localeCompare(right.checkIn));
 }
 
-function bookingUrlFor(location, run) {
-  if (!run || !location.key.startsWith("wa:")) return location.booking_url;
+function reviewUrlFor(location, run = null) {
+  if (!location.key.startsWith("wa:")) return location.booking_url;
   try {
     const url = new URL(location.booking_url);
-    if (url.searchParams.has("startDate")) {
+    if (run && location.selected_nights && url.searchParams.has("startDate")) {
       url.searchParams.set("startDate", run.display_start);
       url.searchParams.set("endDate", addIsoDays(run.display_end, 1));
+      return url.href;
     }
-    return url.href;
+    return `${url.origin}/`;
   } catch (error) {
     return location.booking_url;
   }
@@ -137,15 +186,16 @@ function bookingUrlFor(location, run) {
 
 function makeStayChip(location, run) {
   const nights = dayCount(run.display_start, run.display_end);
-  const text = `${nights} night${nights === 1 ? "" : "s"} · ${run.site_count} site${run.site_count === 1 ? "" : "s"}`;
-  const link = document.createElement("a");
-  link.className = "stay-chip";
-  link.href = bookingUrlFor(location, run);
-  link.target = "_blank";
-  link.rel = "noopener";
-  link.textContent = text;
-  link.setAttribute("aria-label", `${text} — book ${location.name}, checking in ${formatDate(run.display_start)}`);
-  return link;
+  const duration = location.selected_nights
+    ? `${nights} observed night${nights === 1 ? "" : "s"}`
+    : `${nights} consecutive night${nights === 1 ? "" : "s"} observed`;
+  const text = `${duration} · ${run.site_count} site${run.site_count === 1 ? "" : "s"}`;
+  const chip = document.createElement("span");
+  chip.className = "stay-chip";
+  chip.textContent = text;
+  chip.title = "Observed availability only; this is not a provider-validated booking.";
+  chip.setAttribute("aria-label", `${text} at ${location.name}, checking in ${formatDate(run.display_start)}. This is not a provider-validated booking.`);
+  return chip;
 }
 
 function makeAvailabilityTable(location, limit, moreText) {
@@ -153,14 +203,14 @@ function makeAvailabilityTable(location, limit, moreText) {
   const container = document.createElement("div");
   const table = document.createElement("table");
   table.className = "run-table";
-  table.setAttribute("aria-label", "Available stays by check-in date");
+  table.setAttribute("aria-label", "Observed stays by check-in date");
   const caption = document.createElement("caption");
   caption.className = "sr-only";
   caption.textContent = `${location.name} availability`;
   table.appendChild(caption);
   const head = document.createElement("thead");
   const headRow = document.createElement("tr");
-  const headings = ["Check in", "Available stays"];
+  const headings = ["Check in", "Observed stays"];
   headings.forEach(label => {
     const cell = document.createElement("th");
     cell.scope = "col";
@@ -270,15 +320,18 @@ function availableBounds() {
 }
 
 function syncDateControls() {
-  const bounds = availableBounds();
+  const coverage = coverageBounds();
+  const bounds = coverage || availableBounds();
   if (!bounds) return;
-  dateFrom.min = bounds.first;
-  dateFrom.max = bounds.last;
-  dateThrough.min = bounds.first;
-  dateThrough.max = bounds.last;
+  const first = coverage ? coverage.first_night : bounds.first;
+  const last = coverage ? coverage.last_night : bounds.last;
+  dateFrom.min = coverage ? first : "";
+  dateFrom.max = coverage ? last : "";
+  dateThrough.min = coverage ? first : "";
+  dateThrough.max = coverage ? last : "";
   if (!filtersInitialized || usingAllDates) {
-    dateFrom.value = bounds.first;
-    dateThrough.value = bounds.last;
+    dateFrom.value = first;
+    dateThrough.value = last;
     filtersInitialized = true;
   }
 }
@@ -286,21 +339,55 @@ function syncDateControls() {
 function filterLocation(location) {
   const first = dateFrom.value;
   const last = dateThrough.value;
-  const runs = location.runs
-    .filter(run => (!first || run.last_night >= first) && (!last || run.start <= last))
-    .map(run => ({
+  const coverage = coverageBounds();
+  const nights = selectedStayNights();
+  const maxStayNights = stayLimitFor(location)?.max_nights;
+  if (nights && maxStayNights && nights > maxStayNights) return null;
+  const runs = [];
+  location.runs.forEach(run => {
+    const lastObservedNight = minIsoDate(run.last_night, coverage?.last_night);
+    if (!lastObservedNight) return;
+    if (!nights) {
+      const displayStart = maxIsoDate(run.start, first, coverage?.first_night);
+      const displayEnd = minIsoDate(lastObservedNight, last);
+      if (!displayStart || !displayEnd || displayStart > displayEnd) return;
+      runs.push({
+        ...run,
+        display_start: displayStart,
+        display_end: displayEnd,
+      });
+      return;
+    }
+    const firstCheckIn = maxIsoDate(run.start, first, coverage?.first_night);
+    const lastCheckIn = minIsoDate(
+      last,
+      addIsoDays(lastObservedNight, -(nights - 1)),
+    );
+    if (!firstCheckIn || !lastCheckIn || firstCheckIn > lastCheckIn) return;
+    runs.push({
       ...run,
-      display_start: first && run.start < first ? first : run.start,
-      display_end: last && run.last_night > last ? last : run.last_night
-    }));
+      first_check_in: firstCheckIn,
+      last_check_in: lastCheckIn,
+    });
+  });
   if (!runs.length) return null;
+  const earliest = nights
+    ? runs.reduce((value, run) => run.first_check_in < value ? run.first_check_in : value, runs[0].first_check_in)
+    : runs.reduce((value, run) => run.display_start < value ? run.display_start : value, runs[0].display_start);
+  const latestNight = nights
+    ? runs.reduce((value, run) => {
+      const end = addIsoDays(run.last_check_in, nights - 1);
+      return end > value ? end : value;
+    }, addIsoDays(runs[0].last_check_in, nights - 1))
+    : runs.reduce((value, run) => run.display_end > value ? run.display_end : value, runs[0].display_end);
   return {
     ...location,
     runs,
+    selected_nights: nights,
     available_sites: new Set(runs.map(run => run.site)).size,
     available_runs: runs.length,
-    earliest: runs.reduce((value, run) => run.display_start < value ? run.display_start : value, runs[0].display_start),
-    latest_night: runs.reduce((value, run) => run.display_end > value ? run.display_end : value, runs[0].display_end)
+    earliest,
+    latest_night: latestNight,
   };
 }
 
@@ -391,9 +478,36 @@ function showLocation(location, anchor = null, pin = false) {
   availabilityCard.setAttribute("aria-labelledby", "card-title");
   cardContent.replaceChildren();
   const availability = document.createElement("p");
-  availability.textContent = `${location.available_sites} site${location.available_sites === 1 ? "" : "s"} · ${formatDate(location.earliest)} – ${formatDate(location.latest_night)}`;
+  const stayDescription = location.selected_nights
+    ? `${location.selected_nights}-night observed coverage`
+    : "consecutive open nights observed";
+  availability.textContent = `${location.available_sites} site${location.available_sites === 1 ? "" : "s"} with ${stayDescription} · ${formatDate(location.earliest)} – ${formatDate(location.latest_night)}`;
+  const stayLimit = stayLimitFor(location);
+  const policy = document.createElement("p");
+  policy.className = "stay-limit";
+  if (stayLimit) {
+    const parkLimit = `no more than ${stayLimit.max_nights} nights in one park${stayLimit.park_window_days ? ` within ${stayLimit.park_window_days} days` : ""}`;
+    const details = [parkLimit];
+    if (stayLimit.calendar_year_max_nights) {
+      details.push(`${stayLimit.calendar_year_max_nights} nights in all state parks per calendar year`);
+    }
+    policy.append(document.createTextNode(`Published ${stayLimit.label} policy: ${details.join("; ")}. `));
+    if (typeof stayLimit.source_url === "string") {
+      const source = document.createElement("a");
+      source.href = stayLimit.source_url;
+      source.target = "_blank";
+      source.rel = "noopener";
+      source.textContent = "Policy source";
+      policy.appendChild(source);
+    }
+  }
+  const verification = document.createElement("p");
+  verification.className = "verification-note";
+  verification.textContent = location.checked_this_scan === false
+    ? "This campground was not checked in the latest scan. Its saved observations may be old; current availability is unknown."
+    : "Observed availability only. No provider reservation validation was performed, so this is not a bookable-site count.";
   const runHeading = document.createElement("strong");
-  runHeading.textContent = "Available stays";
+  runHeading.textContent = location.selected_nights ? "Observed coverage by check-in date" : "Observed consecutive stays";
   const runTable = makeAvailabilityTable(location, Number.POSITIVE_INFINITY, "");
   runTable.className = "availability-table-block";
   const distance = document.createElement("p");
@@ -416,10 +530,11 @@ function showLocation(location, anchor = null, pin = false) {
     driveNote.textContent = "WA/Tacoma Power park-list estimate, calculated locally from distance and average speed; not a routed time.";
   }
   const link = document.createElement("a");
-  link.href = bookingUrlFor(location, location.runs[0]);
+  const firstGroup = availabilityDateGroups(location)[0];
+  link.href = reviewUrlFor(location, firstGroup?.runs[0]);
   link.target = "_blank";
   link.rel = "noopener";
-  link.textContent = "Open booking page";
+  link.textContent = "Review availability on provider site";
   const osm = document.createElement("a");
   osm.href = `https://www.openstreetmap.org/?mlat=${location.lat}&mlon=${location.lon}#map=13/${location.lat}/${location.lon}`;
   osm.target = "_blank";
@@ -430,7 +545,10 @@ function showLocation(location, anchor = null, pin = false) {
   const provider = document.createElement("p");
   provider.className = "card-provider";
   provider.textContent = `Provider: ${location.provider}`;
-  cardContent.append(availability, runHeading, runTable, distance, driveNote, links, provider);
+  const cardParts = [availability, verification];
+  if (stayLimit) cardParts.push(policy);
+  cardParts.push(runHeading, runTable, distance, driveNote, links, provider);
+  cardContent.append(...cardParts);
   availabilityCard.hidden = false;
   if (pin) cardPinned = true;
   updatePinAction();
@@ -481,7 +599,8 @@ function renderMarkers() {
     const button = document.createElement("button");
     button.className = "marker";
     button.textContent = String(index + 1);
-    button.setAttribute("aria-label", `${location.name}: ${location.available_sites} sites, ${location.earliest} through ${location.latest_night}`);
+    const scanState = location.checked_this_scan === false ? "; not checked in the latest scan" : "";
+    button.setAttribute("aria-label", `${location.name}: ${location.available_sites} sites with observed availability, ${location.earliest} through ${location.latest_night}${scanState}`);
     button.setAttribute("aria-haspopup", "dialog");
     button.style.left = `${point.x - origin.x}px`;
     button.style.top = `${point.y - origin.y}px`;
@@ -576,14 +695,25 @@ function renderSidebar() {
   const list = document.getElementById("locations");
   const summary = document.getElementById("summary");
   list.replaceChildren();
+  renderCoverageNotice();
+  renderStayLimitNotice();
+  const nights = selectedStayNights();
   const filterDescription = dateFrom.value && dateThrough.value
     ? ` from ${formatDate(dateFrom.value)} through ${formatDate(dateThrough.value)}`
     : "";
-  summary.textContent = `${visibleLocations.length} of ${mapData.locations.length} campground(s) have availability${filterDescription}.`;
+  const stayDescription = nights
+    ? ` with a ${nights}-night stay`
+    : "";
+  summary.textContent = `${visibleLocations.length} of ${mapData.locations.length} campground(s) have saved observed availability${filterDescription}${stayDescription}.`;
   if (!visibleLocations.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = "No qualifying availability overlaps this date range.";
+    const state = coverageState();
+    empty.textContent = state === "outside"
+      ? "These dates were not checked, so availability is unknown."
+      : state === "partial"
+        ? "No qualifying availability was recorded in the checked part of this range; the remaining dates are unknown."
+        : "No qualifying availability was recorded for this date range.";
     list.appendChild(empty);
     return;
   }
@@ -594,19 +724,58 @@ function renderSidebar() {
     name.textContent = `${index + 1}. ${location.name}`;
     const meta = document.createElement("span");
     meta.className = "meta";
-    meta.textContent = `${location.available_sites} site(s) · ${location.earliest} → ${location.latest_night} · ${location.provider}`;
+    const scanState = location.checked_this_scan === false ? " · not checked in latest scan" : "";
+    meta.textContent = `${location.available_sites} site(s) · ${location.earliest} → ${location.latest_night} · ${location.provider}${scanState}`;
     button.append(name, meta);
     button.addEventListener("click", () => focusLocation(location));
     list.appendChild(button);
   });
 }
 
+function renderCoverageNotice() {
+  const coverage = coverageBounds();
+  const state = coverageState();
+  const failedCount = Array.isArray(mapData?.failed_keys) ? mapData.failed_keys.length : 0;
+  coverageNotice.classList.toggle("warning", state !== "covered" || failedCount > 0);
+  if (!coverage) {
+    coverageNotice.textContent = "Checked-night coverage is unknown for this older scan. Dates outside recorded availability are unknown, not unavailable.";
+    return;
+  }
+  const range = `${formatDate(coverage.first_night)} – ${formatDate(coverage.last_night)}`;
+  const failedText = failedCount
+    ? ` ${failedCount} campground${failedCount === 1 ? " was" : "s were"} not checked successfully; their current availability is unknown.`
+    : "";
+  if (state === "outside") {
+    coverageNotice.textContent = `These dates are outside the checked nights (${range}); availability is unknown.${failedText}`;
+  } else if (state === "partial") {
+    coverageNotice.textContent = `Part of this selection is outside the checked nights (${range}). Results show only stays fully covered by the scan; un-checked dates are unknown.${failedText}`;
+  } else {
+    coverageNotice.textContent = `Checked nights: ${range}.${failedText}`;
+  }
+}
+
+function renderStayLimitNotice() {
+  const notice = document.getElementById("stay-limit-notice");
+  const nights = selectedStayNights();
+  const limits = new Map();
+  (mapData?.locations || []).forEach(location => {
+    const limit = stayLimitFor(location);
+    if (limit) limits.set(`${limit.label}|${limit.max_nights}`, limit);
+  });
+  const exceeded = [...limits.values()].filter(limit => nights && nights > limit.max_nights);
+  notice.hidden = !exceeded.length;
+  if (!exceeded.length) return;
+  notice.textContent = exceeded.map(limit =>
+    `${limit.label} is excluded: its published limit is ${limit.max_nights} nights in one park${limit.park_window_days ? ` within ${limit.park_window_days} days` : ""}, below this ${nights}-night search.`
+  ).join(" ");
+}
+
 function renderResults() {
   if (!mapData) return;
   visibleLocations = filteredLocationList();
-  closeLocation();
   renderSidebar();
   renderMarkers();
+  refreshOpenCard();
 }
 
 function applyDateFilter(changedInput) {
@@ -619,7 +788,10 @@ function applyDateFilter(changedInput) {
 }
 
 function applyPreset(days) {
-  const bounds = availableBounds();
+  const coverage = coverageBounds();
+  const bounds = coverage
+    ? {first: coverage.first_night, last: coverage.last_night}
+    : availableBounds();
   if (!bounds) return;
   if (days === "all") {
     dateFrom.value = bounds.first;
@@ -916,6 +1088,7 @@ cardHeader.addEventListener("pointerup", event => {
 });
 dateFrom.addEventListener("input", () => applyDateFilter(dateFrom));
 dateThrough.addEventListener("input", () => applyDateFilter(dateThrough));
+stayNights.addEventListener("input", renderResults);
 document.querySelectorAll("#presets button").forEach(button => {
   button.addEventListener("click", () => applyPreset(button.dataset.days));
 });

@@ -10,6 +10,15 @@
       "3": "Washington State Parks",
       "6": "Tacoma Power Parks"
     },
+    "stay_limits": {
+      "3": {
+        "max_nights": 10,
+        "park_window_days": 30,
+        "calendar_year_max_nights": 90,
+        "label": "Washington State Parks camping",
+        "source_url": "https://parks.wa.gov/find-activity/activity-search/camping"
+      }
+    },
     "non_camp_markers": [
       "TRAIL",
       "OFFICE",
