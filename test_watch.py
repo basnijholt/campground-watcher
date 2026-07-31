@@ -420,6 +420,14 @@ class AvailabilityMapTests(unittest.TestCase):
         self.assertIn("function refreshOpenCard()", availability_map.MAP_JS)
         self.assertEqual(availability_map._handler().protocol_version, "HTTP/1.1")
 
+    def test_map_handler_silently_ignores_client_disconnects(self):
+        handler = object.__new__(availability_map._handler())
+        for error in (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            with self.subTest(error=error.__name__), mock.patch.object(
+                availability_map.BaseHTTPRequestHandler, "handle", side_effect=error
+            ):
+                self.assertIsNone(handler.handle())
+
 
 class CandidateDiscoveryTests(unittest.TestCase):
     class Client:

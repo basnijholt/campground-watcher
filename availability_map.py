@@ -315,6 +315,13 @@ def _handler():
         server_version = "CampwatchMap/1.0"
         protocol_version = "HTTP/1.1"
 
+        def handle(self) -> None:
+            """Treat a browser closing its loopback connection as normal."""
+            try:
+                super().handle()
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return
+
         def _allowed_host(self) -> bool:
             host = self.headers.get("Host", "")
             port = self.server.server_address[1]
