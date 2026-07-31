@@ -218,11 +218,20 @@ def build_map_data(
         for key in ("status", "completed", "total", "updated_at", "last_target")
         if key in raw_progress
     }
+    data_updated_at = raw_progress.get("updated_at")
+    if not isinstance(data_updated_at, str):
+        try:
+            data_updated_at = dt.datetime.fromtimestamp(
+                state_path.stat().st_mtime, tz=dt.timezone.utc
+            ).astimezone().isoformat(timespec="seconds")
+        except OSError:
+            data_updated_at = None
     stable = {
         "locations": locations,
         "bounds": bounds,
         "progress": progress,
         "missing_coordinates": missing_coordinates,
+        "data_updated_at": data_updated_at,
     }
     fingerprint = hashlib.sha256(
         json.dumps(stable, sort_keys=True, separators=(",", ":")).encode()
@@ -247,6 +256,9 @@ MAP_HTML = r"""<!doctype html>
     header { padding: 14px 18px; background: #193c2b; color: white; }
     header h1 { margin: 0 0 4px; font-size: 20px; }
     #status { font-size: 13px; opacity: .9; }
+    #freshness { display: inline-flex; align-items: center; min-height: 24px; margin-top: 7px; padding: 3px 8px;
+      border: 1px solid #94c7a4; border-radius: 999px; background: #16412d; color: #edf8ef; font-size: 12px; font-weight: 650; }
+    #freshness.stale { border-color: #f7cf83; background: #5b3b12; color: #fff4dc; }
     #layout { display: grid; grid-template-columns: minmax(250px, 340px) 1fr; height: calc(100vh - 72px); }
     #sidebar { overflow: auto; padding: 12px; border-right: 1px solid #c9c5b8; background: #fffdf7; }
     #filters { margin: 0 0 12px; padding: 10px; border: 1px solid #d4d0c4; border-radius: 9px; background: #f8f6ef; }
@@ -284,13 +296,22 @@ MAP_HTML = r"""<!doctype html>
     #popup h2 { margin: 0 24px 5px 0; font-size: 17px; }
     #popup p { margin: 5px 0; font-size: 13px; }
     #popup a { color: #075b36; font-weight: 650; }
-    .run-table { width: 100%; margin: 7px 0 5px; border-collapse: separate; border-spacing: 0; overflow: hidden;
-      border: 1px solid #cbc7bb; border-radius: 7px; font-size: 11px; }
-    .run-table th, .run-table td { padding: 5px 6px; text-align: left; vertical-align: top; border-bottom: 1px solid #e3dfd4; }
-    .run-table th { background: #e7efe9; color: #294536; font-size: 10px; letter-spacing: .02em; text-transform: uppercase; }
-    .run-table th:last-child, .run-table td:last-child { text-align: right; white-space: nowrap; }
-    .run-table tbody tr:nth-child(even) { background: #f6f4ed; }
+    .run-table-shell { max-height: min(350px, 52vh); margin: 8px 0 5px; overflow: auto; overscroll-behavior: contain;
+      border: 1px solid #cbc7bb; border-radius: 8px; background: #fffefa; box-shadow: inset 0 1px #fff; }
+    .availability-table-title { position: sticky; inset-block-start: 0; z-index: 3; overflow: hidden; padding: 8px 9px; border-bottom: 1px solid #cbc7bb;
+      background: #fffefa; color: #203c2c; font-size: 12px; font-weight: 750; line-height: 17px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+    .run-table { width: 100%; margin: 0; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+    .run-table th, .run-table td { padding: 7px 8px; text-align: left; vertical-align: middle; border-bottom: 1px solid #e3dfd4; }
+    .run-table th { position: sticky; inset-block-start: 34px; z-index: 2; background: #e0ebe3; color: #294536; box-shadow: 0 1px #bccdc1;
+      font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+    .run-table th:last-child, .run-table td:last-child { width: 1%; text-align: center; white-space: nowrap; }
+    .run-table tbody tr:nth-child(even) { background: #f7f5ef; }
+    .run-table tbody tr:hover { background: #eaf4ed; }
     .run-table tbody tr:last-child td { border-bottom: 0; }
+    .book-link { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 4px 9px; border: 1px solid #28714c;
+      border-radius: 6px; background: #eaf5ed; color: #075b36; font-weight: 750; line-height: 1; text-decoration: none; }
+    .book-link:hover, .book-link:focus-visible { border-color: #075b36; background: #cfe8d6; outline: 2px solid #a9d8bd; outline-offset: 1px; }
     .more-runs { margin: 5px 1px 8px; color: #536158; font-size: 11px; }
     #hover-card { position: absolute; z-index: 8; width: min(430px, calc(100% - 24px)); padding: 9px 10px;
       border: 1px solid #52645a; border-radius: 8px; background: #fffffff7; box-shadow: 0 4px 16px #0005;
@@ -317,7 +338,7 @@ MAP_HTML = r"""<!doctype html>
   </style>
 </head>
 <body>
-  <header><h1>Campground availability</h1><div id="status">Loading local results…</div></header>
+  <header><h1>Campground availability</h1><div id="status">Loading local results…</div><div id="freshness" aria-live="polite"></div></header>
   <main id="layout">
     <aside id="sidebar">
       <fieldset id="filters">
@@ -412,6 +433,31 @@ function availabilityRows(location) {
       || left.display_end.localeCompare(right.display_end));
 }
 
+function bookingUrlFor(location, run) {
+  if (!run || !location.key.startsWith("wa:")) return location.booking_url;
+  try {
+    const url = new URL(location.booking_url);
+    if (url.searchParams.has("startDate")) {
+      url.searchParams.set("startDate", run.display_start);
+      url.searchParams.set("endDate", addIsoDays(run.display_end, 1));
+    }
+    return url.href;
+  } catch (error) {
+    return location.booking_url;
+  }
+}
+
+function makeBookingLink(location, run) {
+  const link = document.createElement("a");
+  link.className = "book-link";
+  link.href = bookingUrlFor(location, run);
+  link.target = "_blank";
+  link.rel = "noopener";
+  link.textContent = "Book";
+  link.setAttribute("aria-label", `Book ${location.name}, ${formatDateRange(run)}`);
+  return link;
+}
+
 function makeAvailabilityTable(location, limit, moreText) {
   const rows = availabilityRows(location);
   const aggregateSites = location.key.startsWith("wa:");
@@ -419,11 +465,15 @@ function makeAvailabilityTable(location, limit, moreText) {
   const table = document.createElement("table");
   table.className = "run-table";
   table.setAttribute("aria-label", aggregateSites ? "Available date windows" : "Available site dates");
+  const caption = document.createElement("caption");
+  caption.className = "sr-only";
+  caption.textContent = `${location.name} availability`;
+  table.appendChild(caption);
   const head = document.createElement("thead");
   const headRow = document.createElement("tr");
   const headings = aggregateSites
-    ? ["Available dates", "Nights", "Sites"]
-    : ["Site", "Available dates", "Nights"];
+    ? ["Available dates", "Nights", "Sites", "Book"]
+    : ["Site", "Available dates", "Nights", "Book"];
   headings.forEach(label => {
     const cell = document.createElement("th");
     cell.scope = "col";
@@ -440,17 +490,29 @@ function makeAvailabilityTable(location, limit, moreText) {
     nights.textContent = String(dayCount(run.display_start, run.display_end));
     if (aggregateSites) {
       const sites = document.createElement("td");
+      const book = document.createElement("td");
       sites.textContent = String(run.site_count);
-      row.append(dates, nights, sites);
+      book.appendChild(makeBookingLink(location, run));
+      row.append(dates, nights, sites, book);
     } else {
       const site = document.createElement("td");
+      const book = document.createElement("td");
       site.textContent = run.site;
-      row.append(site, dates, nights);
+      book.appendChild(makeBookingLink(location, run));
+      row.append(site, dates, nights, book);
     }
     body.appendChild(row);
   });
   table.append(head, body);
-  container.appendChild(table);
+  const shell = document.createElement("div");
+  shell.className = "run-table-shell";
+  shell.tabIndex = 0;
+  shell.setAttribute("aria-label", `${location.name} availability table; scroll for more dates`);
+  const tableTitle = document.createElement("div");
+  tableTitle.className = "availability-table-title";
+  tableTitle.textContent = `${location.name} availability`;
+  shell.append(tableTitle, table);
+  container.appendChild(shell);
   if (rows.length > limit) {
     const more = document.createElement("p");
     more.className = "more-runs";
@@ -537,21 +599,6 @@ function filteredLocationList() {
     .sort((left, right) => left.earliest.localeCompare(right.earliest) || left.name.localeCompare(right.name));
 }
 
-function bookingUrlFor(location) {
-  const firstRun = location.runs[0];
-  if (!firstRun || !location.key.startsWith("wa:")) return location.booking_url;
-  try {
-    const url = new URL(location.booking_url);
-    if (url.searchParams.has("startDate")) {
-      url.searchParams.set("startDate", firstRun.display_start);
-      url.searchParams.set("endDate", addIsoDays(firstRun.display_end, 1));
-    }
-    return url.href;
-  } catch (error) {
-    return location.booking_url;
-  }
-}
-
 function project(lat, lon, z) {
   const size = TILE_SIZE * (2 ** z);
   const boundedLat = Math.max(-85.0511, Math.min(85.0511, lat));
@@ -618,7 +665,7 @@ function showLocation(location) {
   if (location.est_drive_hrs != null) distanceParts.push(`~${location.est_drive_hrs} h drive`);
   distance.textContent = distanceParts.join(" · ");
   const link = document.createElement("a");
-  link.href = bookingUrlFor(location);
+  link.href = bookingUrlFor(location, location.runs[0]);
   link.target = "_blank";
   link.rel = "noopener";
   link.textContent = "Open booking page";
@@ -838,12 +885,32 @@ function applyPreset(days) {
 
 function renderStatus() {
   const progress = mapData.progress || {};
-  const parts = [`Updated ${mapData.generated_at}`];
+  const parts = [];
+  const updated = mapData.data_updated_at ? new Date(mapData.data_updated_at) : null;
+  if (updated && !Number.isNaN(updated.getTime())) {
+    parts.push(`Data updated ${updated.toLocaleString()}`);
+  } else {
+    parts.push("Data update time unavailable");
+  }
   if (progress.status === "running" || progress.status === "failed") {
     parts.push(`scan ${progress.status}: ${progress.completed ?? "?"}/${progress.total ?? "?"}`);
   }
   if (mapData.missing_coordinates.length) parts.push(`${mapData.missing_coordinates.length} result(s) lack coordinates`);
   document.getElementById("status").textContent = parts.join(" · ");
+  const freshness = document.getElementById("freshness");
+  const ageMinutes = updated ? Math.floor((Date.now() - updated.getTime()) / 60000) : null;
+  if (ageMinutes == null || Number.isNaN(ageMinutes)) {
+    freshness.textContent = "Availability freshness is unknown";
+    freshness.classList.add("stale");
+  } else if (ageMinutes > 60) {
+    const hours = Math.floor(ageMinutes / 60);
+    const minutes = ageMinutes % 60;
+    freshness.textContent = `Stale availability data: last updated ${hours}h ${minutes}m ago`;
+    freshness.classList.add("stale");
+  } else {
+    freshness.textContent = `Availability data is current (${ageMinutes}m old)`;
+    freshness.classList.remove("stale");
+  }
 }
 
 async function refreshData() {

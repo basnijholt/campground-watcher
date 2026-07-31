@@ -27,6 +27,7 @@ USER_AGENT = (
 )
 MAX_JSON_BYTES = 20 * 1024 * 1024
 RECREATION_GOV_HOST = "www.recreation.gov"
+OSM_ROUTING_HOST = "routing.openstreetmap.de"
 
 
 def atomic_write_json(path: Path, value: Any, mode: int = 0o600) -> None:
@@ -223,6 +224,69 @@ class JsonHttpClient:
             retry_wait_used += delay
         assert last_error is not None
         raise last_error
+
+
+class OsmDrivingRouter:
+    """Small, bounded client for OpenStreetMap's public OSRM car router.
+
+    This is deliberately used only during an explicit candidate rebuild.  It
+    batches destinations, sends a descriptive User-Agent, and never treats a
+    route failure as a usable distance.
+    """
+
+    PATH = "/routed-car/table/v1/driving"
+    MAX_DESTINATIONS_PER_REQUEST = 25
+
+    def __init__(
+        self,
+        http: JsonHttpClient | None = None,
+        *,
+        sleeper: Callable[[float], None] = time.sleep,
+    ):
+        self.http = http or JsonHttpClient(
+            allowed_hosts=(OSM_ROUTING_HOST,), timeout=45, attempts=2
+        )
+        self.sleeper = sleeper
+
+    @staticmethod
+    def _coordinate(latitude: float, longitude: float) -> str:
+        try:
+            lat = float(latitude)
+            lon = float(longitude)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("routing coordinates must be numeric") from exc
+        if not -90 <= lat <= 90 or not -180 <= lon <= 180:
+            raise ValueError("routing coordinates are out of range")
+        return f"{lon:.6f},{lat:.6f}"
+
+    def driving_distances_km(
+        self, origin_lat: float, origin_lon: float, destinations: list[tuple[float, float]]
+    ) -> list[float | None]:
+        """Return one road distance per destination, or None when no route exists."""
+        origin = self._coordinate(origin_lat, origin_lon)
+        results: list[float | None] = []
+        for offset in range(0, len(destinations), self.MAX_DESTINATIONS_PER_REQUEST):
+            batch = destinations[offset : offset + self.MAX_DESTINATIONS_PER_REQUEST]
+            coordinates = ";".join([origin, *(self._coordinate(*item) for item in batch)])
+            data = self.http.get_json(
+                f"https://{OSM_ROUTING_HOST}{self.PATH}/{coordinates}",
+                params={"sources": "0", "annotations": "distance"},
+                headers={"User-Agent": "campground-watcher/1.0 (local candidate rebuild)"},
+            )
+            distances = data.get("distances") if isinstance(data, dict) else None
+            row = distances[0] if isinstance(distances, list) and len(distances) == 1 else None
+            if not isinstance(row, list) or len(row) != len(batch) + 1:
+                raise HttpRequestError("OpenStreetMap routing returned invalid distance data")
+            for meters in row[1:]:
+                if meters is None:
+                    results.append(None)
+                elif isinstance(meters, (int, float)) and 0 <= meters <= 2_000_000:
+                    results.append(float(meters) / 1000)
+                else:
+                    raise HttpRequestError("OpenStreetMap routing returned invalid distance data")
+            if offset + len(batch) < len(destinations):
+                self.sleeper(1.0)
+        return results
 
 
 GTC_HOSTS = {

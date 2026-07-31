@@ -161,6 +161,20 @@ class HttpTransportTests(unittest.TestCase):
 
 
 class ProviderClientTests(unittest.TestCase):
+    def test_osm_router_uses_bounded_distance_table(self):
+        http = mock.Mock()
+        http.get_json.return_value = {"distances": [[0, 12_345, None]]}
+        router = campwatch_http.OsmDrivingRouter(http=http)
+        self.assertEqual(
+            router.driving_distances_km(47.0, -122.0, [(47.1, -122.1), (47.2, -122.2)]),
+            [12.345, None],
+        )
+        url = http.get_json.call_args.args[0]
+        self.assertTrue(url.startswith("https://routing.openstreetmap.de/routed-car/table/v1/driving/"))
+        self.assertEqual(http.get_json.call_args.kwargs["params"], {
+            "sources": "0", "annotations": "distance"
+        })
+
     def test_going_to_camp_rejects_malformed_endpoint_schema(self):
         http = mock.Mock()
         http.get_json.return_value = {"resourceLocations": []}
@@ -248,6 +262,7 @@ class AvailabilityMapTests(unittest.TestCase):
                 "status": "running", "completed": 4, "total": 10
             })
             self.assertNotIn("signature", data["progress"])
+            self.assertIsNotNone(data["data_updated_at"])
             self.assertEqual(data["bounds"]["north"], 47.2)
 
     def test_map_html_uses_no_external_javascript_and_attributes_tiles(self):
@@ -258,8 +273,11 @@ class AvailabilityMapTests(unittest.TestCase):
         self.assertIn('id="date-through" type="date"', availability_map.MAP_HTML)
         self.assertIn('id="hover-card" role="dialog"', availability_map.MAP_HTML)
         self.assertIn('className = "run-table"', availability_map.MAP_HTML)
-        self.assertIn('["Site", "Available dates", "Nights"]', availability_map.MAP_HTML)
-        self.assertIn('["Available dates", "Nights", "Sites"]', availability_map.MAP_HTML)
+        self.assertIn('["Site", "Available dates", "Nights", "Book"]', availability_map.MAP_HTML)
+        self.assertIn('["Available dates", "Nights", "Sites", "Book"]', availability_map.MAP_HTML)
+        self.assertIn('function makeBookingLink(location, run)', availability_map.MAP_HTML)
+        self.assertIn('className = "run-table-shell"', availability_map.MAP_HTML)
+        self.assertIn('Stale availability data:', availability_map.MAP_HTML)
         self.assertIn('makeCardAction("Pin availability card", "pin")', availability_map.MAP_HTML)
         self.assertIn('makeCardAction("Close availability card", "close")', availability_map.MAP_HTML)
 
@@ -290,12 +308,16 @@ class CandidateDiscoveryTests(unittest.TestCase):
         build_candidates.fetch_catalog(
             local, distance_filter="client", **common
         )
+        drive = self.Client(response)
+        build_candidates.fetch_catalog(drive, distance_filter="drive", **common)
         self.assertEqual(server.calls[0]["radius"], 90.0)
         self.assertEqual(server.calls[0]["lat"], 47.0)
         self.assertEqual(server.calls[0]["lng"], -122.0)
         self.assertNotIn("lat", local.calls[0])
         self.assertNotIn("lng", local.calls[0])
         self.assertEqual(local.calls[0]["q"], "Washington")
+        self.assertNotIn("lat", drive.calls[0])
+        self.assertEqual(drive.calls[0]["q"], "Washington")
 
     def test_common_selection_uses_kilometers_and_reports_both_units(self):
         valid = {
@@ -320,6 +342,41 @@ class CandidateDiscoveryTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in candidates], ["123"])
         self.assertAlmostEqual(candidates[0]["distance_km"], 50.0, delta=0.2)
         self.assertAlmostEqual(candidates[0]["dist_mi"], 31.1, delta=0.2)
+
+    def test_drive_selection_uses_road_distance_and_never_server_filtering(self):
+        class Router:
+            def __init__(self):
+                self.calls = []
+
+            def driving_distances_km(self, lat, lon, destinations):
+                self.calls.append((lat, lon, destinations))
+                return [72.5, 95.0]
+
+        base = {
+            "entity_type": "campground",
+            "state_code": "Washington",
+            "reservable": True,
+            "campsites_count": "10",
+            "campsite_type_of_use": ["Overnight"],
+            "average_rating": 4.5,
+            "longitude": -122.0,
+        }
+        router = Router()
+        candidates = build_candidates.select_candidates(
+            [
+                dict(base, entity_id="123", name="Near", latitude=47.45),
+                dict(base, entity_id="456", name="Far", latitude=47.50),
+            ],
+            home_lat=47.0,
+            home_lon=-122.0,
+            max_distance_km=90.0,
+            distance_filter="drive",
+            router=router,
+        )
+        self.assertEqual([item["id"] for item in candidates], ["123"])
+        self.assertEqual(candidates[0]["distance_method"], "driving")
+        self.assertEqual(candidates[0]["distance_km"], 72.5)
+        self.assertEqual(len(router.calls), 1)
 
 
 class WatchLogicTests(unittest.TestCase):

@@ -87,6 +87,9 @@ the pushpin icon to keep that preview on screen; the × icon or Escape closes it
 Click the marker itself for a longer table. The From/Through fields and 7-day,
 30-day, and full-window presets filter both the campground list and map markers
 locally without another provider scan.
+Long availability tables scroll inside the card while keeping the campground name
+and column headers visible. The status bar reports a warning whenever scan data
+has not changed for more than one hour.
 
 For Washington State Parks, GoingToCamp supplies opaque internal resource IDs
 instead of useful campsite labels. The map hides those IDs and groups identical
@@ -105,11 +108,19 @@ local 90 km validation and report distances explicitly in kilometers and miles:
 ```bash
 ./build_candidates.py --distance-filter client  # default; coordinates stay local
 ./build_candidates.py --distance-filter server  # faster; sends coordinates to recreation.gov
+./build_candidates.py --distance-filter drive   # OSM road-distance cutoff; no rec.gov proximity query
 ./build_candidates.py --max-distance-km 120      # optional explicit km cutoff
 ```
 
 Server mode is opt-in because recreation.gov interprets its `radius` and
 returned `distance` values as kilometers and receives the configured coordinates.
+Driving mode is deliberately incompatible with server mode: it fetches the
+statewide catalog, then sends your home coordinate and candidate coordinates in
+small batches to the public OpenStreetMap OSRM routing service to compute road
+distance. It uses no extra package, but does disclose those coordinates and your
+IP address to that service; use the default client mode if that is not acceptable.
+The service is best-effort and rate-limited, so use driving mode only for an
+occasional candidate-list rebuild rather than a scheduled task.
 The generated JSON lists contain distances derived from your home location, so
 review them before committing; the checked-in lists use the public Seattle example.
 
