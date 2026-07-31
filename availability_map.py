@@ -30,6 +30,7 @@ CANDIDATES = HERE / "candidates.json"
 WA_PARKS = HERE / "wa_parks.json"
 MAP_HTML = (HERE / "availability_map.html").read_text(encoding="utf-8")
 MAP_JS = (HERE / "availability_map.js").read_text(encoding="utf-8")
+CARD_MANAGER_JS = (HERE / "card_manager.js").read_text(encoding="utf-8")
 
 # The map only watches its local, atomically-written source files while a
 # browser has an event-stream connection open.  This avoids a background timer
@@ -472,6 +473,8 @@ def _handler():
                 self._stream_events()
             elif path == "/availability_map.js":
                 self._send(200, "application/javascript; charset=utf-8", MAP_JS.encode())
+            elif path == "/card_manager.js":
+                self._send(200, "application/javascript; charset=utf-8", CARD_MANAGER_JS.encode())
             elif path == "/favicon.ico":
                 self._send(204, "image/x-icon", b"")
             else:

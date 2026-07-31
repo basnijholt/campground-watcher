@@ -11,11 +11,8 @@ let initialized = false;
 let filtersInitialized = false;
 let usingAllDates = true;
 let visibleLocations = [];
-let cardPinned = false;
-let cardLocationKey = null;
-let cardAnchor = null;
-let cardHideTimer = null;
 let cardDrag = null;
+let cardDomId = 0;
 let mapPan = null;
 let mapRenderFrame = null;
 let renderedTileZoom = null;
@@ -34,11 +31,14 @@ const RECOVERY_PROBE_MILLISECONDS = 30 * 1000;
 const map = document.getElementById("map");
 const tiles = document.getElementById("tiles");
 const markers = document.getElementById("markers");
-const availabilityCard = document.getElementById("availability-card");
-const cardTitle = document.getElementById("card-title");
-const cardContent = document.getElementById("card-content");
-const cardHeader = document.getElementById("card-header");
-const cardPin = document.getElementById("card-pin");
+const cards = document.getElementById("cards");
+const cardManager = new CardManager({maxPinned: 5});
+const cardElements = new Map();
+const markerElements = new Map();
+const shortcutHelpBackdrop = document.getElementById("shortcut-help-backdrop");
+const shortcutHelp = document.getElementById("shortcut-help");
+const shortcutHelpClose = document.getElementById("shortcut-help-close");
+let shortcutReturnFocus = null;
 const dateFrom = document.getElementById("date-from");
 const dateThrough = document.getElementById("date-through");
 const stayNights = document.getElementById("stay-nights");
@@ -289,51 +289,84 @@ function makeIcon(name) {
   return svg;
 }
 
-function updatePinAction() {
-  const label = cardPinned ? "Unpin availability card" : "Pin availability card";
-  cardPin.setAttribute("aria-label", label);
-  cardPin.setAttribute("aria-pressed", String(cardPinned));
-  cardPin.title = label;
+function updatePinAction(view, card) {
+  const label = card.pinned ? "Unpin availability card" : "Pin availability card";
+  view.pin.setAttribute("aria-label", label);
+  view.pin.setAttribute("aria-pressed", String(card.pinned));
+  view.pin.title = label;
 }
 
-function cancelCardHide() {
-  if (cardHideTimer != null) {
-    clearTimeout(cardHideTimer);
-    cardHideTimer = null;
-  }
-}
-
-function scheduleCardHide() {
-  cancelCardHide();
-  if (cardPinned) return;
-  cardHideTimer = setTimeout(() => {
-    cardHideTimer = null;
-    const anchorActive = cardAnchor && (cardAnchor.matches(":hover") || document.activeElement === cardAnchor);
-    const cardActive = availabilityCard.matches(":hover") || availabilityCard.contains(document.activeElement);
-    if (!cardPinned && !anchorActive && !cardActive) closeLocation();
-  }, 180);
-}
-
-function clampCardPosition(left, top) {
-  const maxLeft = Math.max(12, map.clientWidth - availabilityCard.offsetWidth - 12);
-  const maxTop = Math.max(12, map.clientHeight - availabilityCard.offsetHeight - 12);
+function clampCardPosition(left, top, size) {
+  const maxLeft = Math.max(12, map.clientWidth - size.width - 12);
+  const maxTop = Math.max(12, map.clientHeight - size.height - 12);
   return {left: Math.max(12, Math.min(maxLeft, left)), top: Math.max(12, Math.min(maxTop, top))};
 }
 
-function moveCard(left, top) {
-  const position = clampCardPosition(left, top);
-  availabilityCard.style.left = `${position.left}px`;
-  availabilityCard.style.top = `${position.top}px`;
+function cardSize(view) {
+  return {width: view.element.offsetWidth, height: view.element.offsetHeight};
 }
 
-function placeCardNear(anchor) {
+function initialCardSize() {
+  return {
+    width: Math.min(430, Math.max(0, map.clientWidth - 24)),
+    height: Math.min(520, Math.max(0, map.clientHeight - 24)),
+  };
+}
+
+function placeCardNear(anchor, size) {
   const markerX = Number.parseFloat(anchor.style.left);
   const markerY = Number.parseFloat(anchor.style.top);
-  const cardWidth = availabilityCard.offsetWidth;
-  const cardHeight = availabilityCard.offsetHeight;
+  const cardWidth = size.width;
+  const cardHeight = size.height;
   let left = markerX + 20;
   if (left + cardWidth > map.clientWidth - 12) left = markerX - cardWidth - 20;
-  moveCard(left, markerY - cardHeight / 2);
+  return clampCardPosition(left, markerY - cardHeight / 2, size);
+}
+
+function defaultCardPosition(size) {
+  return clampCardPosition(16, map.clientHeight - size.height - 26, size);
+}
+
+function applyCardLayout(key) {
+  const view = cardElements.get(key);
+  const card = cardManager.get(key);
+  if (!view || !card) return;
+  view.element.style.left = `${card.position.left}px`;
+  view.element.style.top = `${card.position.top}px`;
+  view.element.style.zIndex = String(card.zIndex);
+  view.element.classList.toggle("is-focused", cardManager.focusedId === key);
+  updatePinAction(view, card);
+}
+
+function applyAllCardLayouts() {
+  cardManager.all().forEach(card => applyCardLayout(card.key));
+}
+
+function focusCard(key, {moveFocus = false} = {}) {
+  if (!cardManager.focus(key)) return false;
+  const view = cardElements.get(key);
+  if (view) {
+    const current = cardManager.get(key);
+    const size = cardSize(view);
+    const position = clampCardPosition(current.position.left, current.position.top, size);
+    cardManager.updateLayout(key, {position, size});
+    applyAllCardLayouts();
+    if (moveFocus) view.element.focus({preventScroll: true});
+  }
+  return true;
+}
+
+function clearCardFocus() {
+  cardManager.blur();
+  applyAllCardLayouts();
+}
+
+function moveCard(key, left, top) {
+  const view = cardElements.get(key);
+  if (!view) return;
+  const size = cardSize(view);
+  cardManager.updateLayout(key, {position: clampCardPosition(left, top, size), size});
+  applyCardLayout(key);
 }
 
 function availableBounds() {
@@ -494,17 +527,119 @@ function renderTiles() {
   });
 }
 
-function showLocation(location, anchor = null, pin = false) {
-  cancelCardHide();
-  // A pinned card stays with its campground until the user explicitly unpins
-  // or closes it. Selection and hover must not silently replace it.
-  if (cardPinned && cardLocationKey !== location.key) return;
-  const shouldPlace = anchor && (availabilityCard.hidden || !cardPinned);
-  cardLocationKey = location.key;
-  cardAnchor = anchor;
-  cardTitle.textContent = location.name;
-  availabilityCard.setAttribute("aria-labelledby", "card-title");
-  cardContent.replaceChildren();
+function createCardElement(key) {
+  const element = document.createElement("aside");
+  element.className = "availability-card";
+  element.dataset.cardKey = key;
+  element.setAttribute("role", "dialog");
+  element.setAttribute("aria-modal", "false");
+  element.setAttribute("aria-keyshortcuts", "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Escape ?");
+  element.tabIndex = -1;
+  const header = document.createElement("div");
+  header.className = "card-header";
+  const title = document.createElement("strong");
+  title.className = "card-title";
+  const titleId = `card-title-${++cardDomId}`;
+  title.id = titleId;
+  element.setAttribute("aria-labelledby", titleId);
+  const actions = document.createElement("div");
+  actions.className = "card-actions";
+  const pin = document.createElement("button");
+  pin.type = "button";
+  pin.className = "card-action";
+  pin.appendChild(makeIcon("pin"));
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "card-action";
+  close.setAttribute("aria-label", "Close availability card");
+  close.title = "Close availability card";
+  close.appendChild(makeIcon("close"));
+  actions.append(pin, close);
+  header.append(title, actions);
+  const content = document.createElement("div");
+  content.className = "card-content";
+  element.append(header, content);
+  cards.appendChild(element);
+  const view = {element, header, title, content, pin, close, resizeObserver: null};
+  cardElements.set(key, view);
+
+  pin.addEventListener("click", () => {
+    const card = cardManager.get(key);
+    if (!card) return;
+    cardManager.setPinned(key, !card.pinned);
+    focusCard(key);
+  });
+  close.addEventListener("click", () => closeCard(key, {explicit: true}));
+  element.addEventListener("pointerdown", () => focusCard(key));
+  element.addEventListener("focusin", () => focusCard(key));
+  header.addEventListener("pointerdown", event => {
+    if (event.button !== 0 || event.target.closest("button")) return;
+    event.preventDefault();
+    focusCard(key);
+    const rect = element.getBoundingClientRect();
+    const mapRect = map.getBoundingClientRect();
+    cardDrag = {
+      key,
+      pointerId: event.pointerId,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+      mapLeft: mapRect.left,
+      mapTop: mapRect.top,
+    };
+    header.classList.add("dragging");
+    header.setPointerCapture(event.pointerId);
+  });
+  header.addEventListener("pointermove", event => {
+    if (!cardDrag || cardDrag.key !== key || event.pointerId !== cardDrag.pointerId) return;
+    moveCard(key, event.clientX - cardDrag.mapLeft - cardDrag.offsetX, event.clientY - cardDrag.mapTop - cardDrag.offsetY);
+  });
+  const stopCardDrag = event => {
+    if (!cardDrag || cardDrag.key !== key || event.pointerId !== cardDrag.pointerId) return;
+    if (header.hasPointerCapture(event.pointerId)) header.releasePointerCapture(event.pointerId);
+    cardDrag = null;
+    header.classList.remove("dragging");
+  };
+  header.addEventListener("pointerup", stopCardDrag);
+  header.addEventListener("pointercancel", stopCardDrag);
+  if (typeof ResizeObserver === "function") {
+    view.resizeObserver = new ResizeObserver(() => {
+      const current = cardManager.get(key);
+      if (!current) return;
+      const size = cardSize(view);
+      cardManager.updateLayout(key, {position: clampCardPosition(current.position.left, current.position.top, size), size});
+      applyCardLayout(key);
+    });
+    view.resizeObserver.observe(element);
+  }
+  return view;
+}
+
+function destroyCardElement(key) {
+  const view = cardElements.get(key);
+  if (!view) return;
+  view.resizeObserver?.disconnect();
+  view.element.remove();
+  cardElements.delete(key);
+}
+
+function closeCard(key, {explicit = false} = {}) {
+  if (!cardManager.close(key, {explicit})) return false;
+  destroyCardElement(key);
+  if (cardManager.focusedId) focusCard(cardManager.focusedId, {moveFocus: explicit});
+  else if (explicit) map.focus({preventScroll: true});
+  return true;
+}
+
+function dismissUnpinnedCards(exceptKey = null) {
+  cardManager.dismissUnpinned({exceptKey}).forEach(destroyCardElement);
+  applyAllCardLayouts();
+}
+
+function renderLocationCard(location, view) {
+  const previousTable = view.content.querySelector(".run-table-shell");
+  const scrollTop = previousTable ? previousTable.scrollTop : 0;
+  view.title.textContent = location.name;
+  view.content.replaceChildren();
   const availability = document.createElement("p");
   const stayDescription = location.selected_nights
     ? `${location.selected_nights}-night observed coverage`
@@ -594,50 +729,53 @@ function showLocation(location, anchor = null, pin = false) {
   const cardParts = [availability];
   if (stayLimit) cardParts.push(policy);
   cardParts.push(runHeading, runTable, distance, driveNote, links, provider, disclaimer);
-  cardContent.append(...cardParts);
-  availabilityCard.hidden = false;
-  if (pin) cardPinned = true;
-  updatePinAction();
-  if (shouldPlace) placeCardNear(anchor);
-  else if (!availabilityCard.style.left) {
-    moveCard(16, map.clientHeight - availabilityCard.offsetHeight - 26);
-  }
+  view.content.append(...cardParts);
+  const refreshedTable = view.content.querySelector(".run-table-shell");
+  if (refreshedTable) refreshedTable.scrollTop = scrollTop;
+  applyCardLayout(location.key);
 }
 
-function closeLocation() {
-  cancelCardHide();
-  cardPinned = false;
-  cardLocationKey = null;
-  cardAnchor = null;
-  availabilityCard.hidden = true;
-  availabilityCard.removeAttribute("aria-labelledby");
-  updatePinAction();
-}
-
-function refreshOpenCard() {
-  if (availabilityCard.hidden || !cardLocationKey || !mapData) return;
-  const location = visibleLocations.find(item => item.key === cardLocationKey);
-  if (location) {
-    const table = cardContent.querySelector(".run-table-shell");
-    const scrollTop = table ? table.scrollTop : 0;
-    showLocation(location, null, cardPinned);
-    const refreshedTable = cardContent.querySelector(".run-table-shell");
-    if (refreshedTable) refreshedTable.scrollTop = scrollTop;
-    return;
-  }
-  if (!cardPinned) {
-    closeLocation();
-    return;
-  }
-  cardContent.replaceChildren();
+function renderUnavailableCard(key) {
+  const view = cardElements.get(key);
+  if (!view) return;
+  const location = mapData?.locations?.find(item => item.key === key);
+  view.title.textContent = location?.name || key;
+  view.content.replaceChildren();
   const message = document.createElement("p");
   message.textContent = "This campground no longer has qualifying availability in the selected date range.";
-  cardContent.appendChild(message);
-  updatePinAction();
+  view.content.appendChild(message);
+  applyCardLayout(key);
+}
+
+function showLocation(location, anchor = null) {
+  const existing = cardManager.get(location.key);
+  if (existing) {
+    focusCard(location.key, {moveFocus: true});
+    return;
+  }
+  const provisionalSize = initialCardSize();
+  const position = anchor ? placeCardNear(anchor, provisionalSize) : defaultCardPosition(provisionalSize);
+  const result = cardManager.open({key: location.key, position, size: provisionalSize});
+  result.closedKeys.forEach(destroyCardElement);
+  const view = createCardElement(location.key);
+  renderLocationCard(location, view);
+  const size = cardSize(view);
+  cardManager.updateLayout(location.key, {position: anchor ? placeCardNear(anchor, size) : defaultCardPosition(size), size});
+  focusCard(location.key, {moveFocus: true});
+}
+
+function refreshOpenCards() {
+  cardManager.all().forEach(card => {
+    const location = visibleLocations.find(item => item.key === card.key);
+    if (location) renderLocationCard(location, cardElements.get(card.key));
+    else if (card.pinned) renderUnavailableCard(card.key);
+    else closeCard(card.key);
+  });
 }
 
 function renderMarkers() {
   markers.replaceChildren();
+  markerElements.clear();
   if (!mapData) return;
   const origin = viewportOrigin();
   visibleLocations.forEach((location, index) => {
@@ -650,12 +788,9 @@ function renderMarkers() {
     button.setAttribute("aria-haspopup", "dialog");
     button.style.left = `${point.x - origin.x}px`;
     button.style.top = `${point.y - origin.y}px`;
-    button.addEventListener("click", () => showLocation(location, button, true));
-    button.addEventListener("pointerenter", () => showLocation(location, button));
-    button.addEventListener("pointerleave", scheduleCardHide);
-    button.addEventListener("focus", () => showLocation(location, button));
-    button.addEventListener("blur", scheduleCardHide);
+    button.addEventListener("click", () => showLocation(location, button));
     markers.appendChild(button);
+    markerElements.set(location.key, button);
   });
 }
 
@@ -706,7 +841,7 @@ function zoomAtMapCenter(amount) {
 }
 
 function isMapGestureTarget(target) {
-  return !target.closest("button, a, input, select, textarea, #availability-card");
+  return !target.closest("button, a, input, select, textarea, .availability-card");
 }
 
 function fitAll() {
@@ -731,11 +866,10 @@ function fitAll() {
 }
 
 function focusLocation(location) {
-  if (cardPinned && cardLocationKey !== location.key) return;
   center = {lat: location.lat, lon: location.lon};
   zoom = Math.max(zoom, 10);
   renderMap();
-  showLocation(location, null, true);
+  showLocation(location, markerElements.get(location.key) || null);
 }
 
 function renderSidebar() {
@@ -822,7 +956,7 @@ function renderResults() {
   visibleLocations = filteredLocationList();
   renderSidebar();
   renderMarkers();
-  refreshOpenCard();
+  refreshOpenCards();
 }
 
 function applyDateFilter(changedInput) {
@@ -957,7 +1091,7 @@ async function refreshData() {
       if (!initialized) { initialized = true; fitAll(); }
       else {
         renderMarkers();
-        refreshOpenCard();
+        refreshOpenCards();
       }
     }
   } catch (error) {
@@ -1079,59 +1213,60 @@ map.addEventListener("wheel", event => {
   }
   if (steps && zoomAt(event.clientX, event.clientY, steps)) renderMapSoon();
 }, {passive: false});
-map.addEventListener("keydown", event => {
-  if (event.target !== map) return;
+function handleMapShortcut(event) {
   let changed = false;
+  if (event.key === "?") {
+    openShortcutHelp();
+    event.preventDefault();
+    return true;
+  }
   if (event.key === "+" || event.key === "=") changed = zoomAtMapCenter(1);
   else if (event.key === "-" || event.key === "_") changed = zoomAtMapCenter(-1);
   else if (event.key === "ArrowLeft") { panBy(80, 0); changed = true; }
   else if (event.key === "ArrowRight") { panBy(-80, 0); changed = true; }
   else if (event.key === "ArrowUp") { panBy(0, 80); changed = true; }
   else if (event.key === "ArrowDown") { panBy(0, -80); changed = true; }
-  else if (event.key === "Home") { fitAll(); event.preventDefault(); return; }
+  else if (event.key === "Home") { fitAll(); event.preventDefault(); return true; }
   if (changed) {
     event.preventDefault();
     renderMap();
   }
+  return changed;
+}
+
+function cardKeyForTarget(target) {
+  const element = target.closest?.(".availability-card");
+  return element?.dataset.cardKey || null;
+}
+
+function scrollCard(key, direction) {
+  const view = cardElements.get(key);
+  const shell = view?.content.querySelector(".run-table-shell");
+  if (!shell) return;
+  shell.scrollBy({top: direction * Math.max(80, shell.clientHeight * 0.85)});
+}
+
+function openShortcutHelp() {
+  if (!shortcutHelpBackdrop.hidden) return;
+  shortcutReturnFocus = document.activeElement;
+  clearCardFocus();
+  shortcutHelpBackdrop.hidden = false;
+  shortcutHelp.focus({preventScroll: true});
+}
+
+function closeShortcutHelp() {
+  if (shortcutHelpBackdrop.hidden) return;
+  shortcutHelpBackdrop.hidden = true;
+  shortcutReturnFocus?.focus?.({preventScroll: true});
+  shortcutReturnFocus = null;
+}
+
+map.addEventListener("keydown", event => {
+  if (event.target === map) handleMapShortcut(event);
 });
-cardPin.appendChild(makeIcon("pin"));
-document.getElementById("card-close").appendChild(makeIcon("close"));
-cardPin.addEventListener("click", () => {
-  cardPinned = !cardPinned;
-  updatePinAction();
-  if (!cardPinned) scheduleCardHide();
-});
-document.getElementById("card-close").addEventListener("click", closeLocation);
-availabilityCard.addEventListener("pointerenter", cancelCardHide);
-availabilityCard.addEventListener("pointerleave", scheduleCardHide);
-availabilityCard.addEventListener("focusin", cancelCardHide);
-availabilityCard.addEventListener("focusout", scheduleCardHide);
-cardHeader.addEventListener("pointerdown", event => {
-  if (event.button !== 0 || event.target.closest("button")) return;
-  event.preventDefault();
-  const rect = availabilityCard.getBoundingClientRect();
-  const mapRect = map.getBoundingClientRect();
-  cardDrag = {
-    pointerId: event.pointerId,
-    offsetX: event.clientX - rect.left,
-    offsetY: event.clientY - rect.top,
-    mapLeft: mapRect.left,
-    mapTop: mapRect.top,
-  };
-  cardHeader.classList.add("dragging");
-  cardHeader.setPointerCapture(event.pointerId);
-});
-cardHeader.addEventListener("pointermove", event => {
-  if (!cardDrag || event.pointerId !== cardDrag.pointerId) return;
-  moveCard(event.clientX - cardDrag.mapLeft - cardDrag.offsetX, event.clientY - cardDrag.mapTop - cardDrag.offsetY);
-});
-cardHeader.addEventListener("pointerup", event => {
-  if (!cardDrag || event.pointerId !== cardDrag.pointerId) return;
-  cardHeader.releasePointerCapture(event.pointerId);
-  cardDrag = null;
-  cardHeader.classList.remove("dragging");
-  cardPinned = true;
-  updatePinAction();
+shortcutHelpClose.addEventListener("click", closeShortcutHelp);
+shortcutHelpBackdrop.addEventListener("pointerdown", event => {
+  if (event.target === shortcutHelpBackdrop) closeShortcutHelp();
 });
 dateFrom.addEventListener("input", () => applyDateFilter(dateFrom));
 dateThrough.addEventListener("input", () => applyDateFilter(dateThrough));
@@ -1139,14 +1274,58 @@ stayNights.addEventListener("input", renderResults);
 document.querySelectorAll("#presets button").forEach(button => {
   button.addEventListener("click", () => applyPreset(button.dataset.days));
 });
+document.addEventListener("pointerdown", event => {
+  if (shortcutHelpBackdrop.hidden && event.button === 0) {
+    const cardKey = cardKeyForTarget(event.target);
+    if (!cardKey) clearCardFocus();
+    dismissUnpinnedCards(cardKey);
+  }
+});
 document.addEventListener("keydown", event => {
-  if (event.key === "Escape" && !availabilityCard.hidden) closeLocation();
+  if (!shortcutHelpBackdrop.hidden) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeShortcutHelp();
+    }
+    return;
+  }
+  const cardKey = cardKeyForTarget(event.target);
+  if (!cardKey) {
+    if (event.key === "?" && !event.target.matches?.("input, select, textarea")) {
+      openShortcutHelp();
+      event.preventDefault();
+    }
+    return;
+  }
+  if (cardManager.focusedId !== cardKey) focusCard(cardKey);
+  const action = cardManager.handleKey(event.key);
+  if (action.kind === "shortcuts") {
+    event.preventDefault();
+    openShortcutHelp();
+  } else if (action.kind === "focus") {
+    event.preventDefault();
+    focusCard(action.cardId, {moveFocus: true});
+  } else if (action.kind === "scroll") {
+    event.preventDefault();
+    scrollCard(action.cardId, action.direction);
+  } else if (action.kind === "close") {
+    event.preventDefault();
+    destroyCardElement(action.cardId);
+    if (cardManager.focusedId) focusCard(cardManager.focusedId, {moveFocus: true});
+    else map.focus({preventScroll: true});
+  } else {
+    handleMapShortcut(event);
+  }
 });
 window.addEventListener("resize", () => {
   if (initialized) renderMap();
-  if (!availabilityCard.hidden) {
-    moveCard(Number.parseFloat(availabilityCard.style.left), Number.parseFloat(availabilityCard.style.top));
-  }
+  cardManager.all().forEach(card => {
+    const view = cardElements.get(card.key);
+    if (!view) return;
+    const size = cardSize(view);
+    cardManager.updateLayout(card.key, {position: clampCardPosition(card.position.left, card.position.top, size), size});
+  });
+  applyAllCardLayouts();
 });
 void refreshData().then(startLiveUpdates);
 // This keeps the stale-data indicator honest without requesting map data.

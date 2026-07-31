@@ -91,12 +91,18 @@ is open, it holds one same-origin event stream to the local map server. The
 server watches the atomic scan checkpoint files: a checkpoint-only change updates
 the status line, while a changed availability fingerprint causes one full map-data
 fetch and marker/list update. It does not repeatedly fetch unchanged availability
-data. Markers represent campgrounds with qualifying availability; their one
-floating detail card shows the number of distinct sites, observed date span,
-distance, and provider-review links. Hover or focus a marker to open the full
-scrollable card, then use its pin button to keep it open. The card can be dragged
-by its header and resized from its lower-right corner; × or Escape closes it.
-Selecting a marker or a campground in the list opens and pins the same card. The
+data. Markers represent campgrounds with qualifying availability; clicking one
+opens an unpinned floating detail card with the number of distinct sites,
+observed date span, distance, and provider-review links. An unpinned card closes
+when you click elsewhere or open another card. Use its pin button to keep it
+open; up to five cards may be pinned, and pinning a sixth automatically unpins
+the oldest pinned card. Reopening an existing card keeps its position and pin
+state, then brings it to the foreground. Cards can be dragged by their headers
+and resized from their lower-right corners; × always closes a card. The keyboard-
+focused card has a blue inset highlight; Escape closes it, arrow keys select the
+nearest open card, and Page Up/Page Down scroll its availability. Press `?` for
+a Gmail-style shortcut overlay. Selecting a marker or a campground in the list
+opens the relevant card without changing its pin state. The
 check-in-date fields update the campground list, map markers, and any open card
 immediately, locally, without another provider scan. Leave stay length blank to
 browse every recorded option; set it (for example, to two nights) to count only
@@ -107,7 +113,9 @@ outside it: un-checked dates are always shown as unknown, never unavailable.
 The 7-day, 30-day, and full-window presets set the same check-in range.
 Drag an empty part of the map to pan. Hover the map and use the mouse wheel or
 double-click to zoom; the +/− controls work too. When the map has keyboard focus,
-the arrow keys pan, +/− zoom, and Home fits the currently displayed campgrounds.
+the arrow keys pan, +/− (including Command +/−) zoom, and Home fits the currently
+displayed campgrounds. Those map shortcuts are also available from a focused card
+when they are not being used for a card shortcut.
 Long availability tables scroll inside the card while keeping the campground name
 and column headers visible. Results are grouped by check-in day: each compact,
 observed-stay chip is a booking link and shows its nights and observed-site

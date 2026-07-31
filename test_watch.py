@@ -394,6 +394,12 @@ class AvailabilityMapTests(unittest.TestCase):
             "<!doctype html>",
             Path(availability_map.__file__).read_text(encoding="utf-8").lower(),
         )
+        card_manager_path = availability_map.HERE / "card_manager.js"
+        self.assertEqual(
+            availability_map.CARD_MANAGER_JS,
+            card_manager_path.read_text(encoding="utf-8"),
+        )
+        self.assertIn('<script src="/card_manager.js" defer></script>', availability_map.MAP_HTML)
         self.assertIn('<script src="/availability_map.js" defer></script>', availability_map.MAP_HTML)
         self.assertNotIn('"use strict";', availability_map.MAP_HTML)
         self.assertIn("https://tile.openstreetmap.org/{z}/{x}/{y}.png", availability_map.MAP_JS)
@@ -405,7 +411,9 @@ class AvailabilityMapTests(unittest.TestCase):
         self.assertIn('id="coverage-notice"', availability_map.MAP_HTML)
         self.assertIn('id="stay-limit-notice"', availability_map.MAP_HTML)
         self.assertIn("Results update immediately from saved scans.", availability_map.MAP_HTML)
-        self.assertIn('id="availability-card" role="dialog"', availability_map.MAP_HTML)
+        self.assertIn('id="cards"', availability_map.MAP_HTML)
+        self.assertIn('id="shortcut-help-backdrop"', availability_map.MAP_HTML)
+        self.assertIn('Keyboard shortcuts', availability_map.MAP_HTML)
         self.assertIn('className = "run-table"', availability_map.MAP_JS)
         self.assertIn('["Check in", "Observed stays"]', availability_map.MAP_JS)
         self.assertIn('function availabilityDateGroups(location)', availability_map.MAP_JS)
@@ -422,7 +430,9 @@ class AvailabilityMapTests(unittest.TestCase):
         self.assertIn('link.textContent = "Book";', availability_map.MAP_JS)
         self.assertIn('Availability may have changed: all openings shown were observed', availability_map.MAP_JS)
         self.assertIn('The provider may not support booking a reservation for a displayed stay longer than 10 nights.', availability_map.MAP_JS)
-        self.assertIn('if (cardPinned && cardLocationKey !== location.key) return;', availability_map.MAP_JS)
+        self.assertIn('const cardManager = new CardManager({maxPinned: 5});', availability_map.MAP_JS)
+        self.assertIn('function createCardElement(key)', availability_map.MAP_JS)
+        self.assertIn('function dismissUnpinnedCards(exceptKey = null)', availability_map.MAP_JS)
         self.assertIn('function formatCheckInDate(value)', availability_map.MAP_JS)
         self.assertIn('checkIn.textContent = formatCheckInDate(group.checkIn)', availability_map.MAP_JS)
         self.assertIn('function formatDriveDuration(seconds)', availability_map.MAP_JS)
@@ -432,9 +442,9 @@ class AvailabilityMapTests(unittest.TestCase):
         self.assertIn('Stale availability data:', availability_map.MAP_JS)
         self.assertIn('const FRESH_SCAN_COMMAND = "python3 watch.py --all-once"', availability_map.MAP_JS)
         self.assertIn('freshness.addEventListener("click", copyFreshScanCommand)', availability_map.MAP_JS)
-        self.assertIn('id="card-pin"', availability_map.MAP_HTML)
+        self.assertIn('pin.className = "card-action";', availability_map.MAP_JS)
         self.assertIn('resize: both', availability_map.MAP_HTML)
-        self.assertIn('function placeCardNear(anchor)', availability_map.MAP_JS)
+        self.assertIn('function placeCardNear(anchor, size)', availability_map.MAP_JS)
         self.assertIn('tabindex="0"', availability_map.MAP_HTML)
         self.assertIn('function panBy(screenX, screenY)', availability_map.MAP_JS)
         self.assertIn('function zoomAt(clientX, clientY, amount)', availability_map.MAP_JS)
@@ -444,13 +454,13 @@ class AvailabilityMapTests(unittest.TestCase):
         self.assertIn('id="fit" aria-label="Fit displayed campgrounds"', availability_map.MAP_HTML)
         self.assertNotIn('.marker.rg', availability_map.MAP_HTML)
         self.assertIn('provider.textContent = `Provider: ${location.provider}`', availability_map.MAP_JS)
-        self.assertIn('function closeLocation()', availability_map.MAP_JS)
+        self.assertIn('function closeCard(key, {explicit = false} = {})', availability_map.MAP_JS)
         self.assertIn('new EventSource("/events")', availability_map.MAP_JS)
         self.assertIn('events.addEventListener("map-update", handleMapUpdate)', availability_map.MAP_JS)
         self.assertNotIn("setInterval(refreshData, 5000)", availability_map.MAP_JS)
         self.assertIn("setInterval(renderStatus, 60_000)", availability_map.MAP_JS)
-        self.assertIn("function refreshOpenCard()", availability_map.MAP_JS)
-        self.assertIn("renderMarkers();\n  refreshOpenCard();", availability_map.MAP_JS)
+        self.assertIn("function refreshOpenCards()", availability_map.MAP_JS)
+        self.assertIn("renderMarkers();\n  refreshOpenCards();", availability_map.MAP_JS)
         self.assertEqual(availability_map._handler().protocol_version, "HTTP/1.1")
 
     def test_map_handler_silently_ignores_client_disconnects(self):
