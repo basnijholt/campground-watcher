@@ -283,9 +283,7 @@ MAP_HTML = r"""<!doctype html>
     #tiles img { position: absolute; width: 256px; height: 256px; user-select: none; }
     .marker { position: absolute; transform: translate(-50%, -100%); width: 30px; height: 38px; border: 0;
       clip-path: polygon(50% 100%, 5% 42%, 7% 23%, 19% 8%, 36% 1%, 64% 1%, 81% 8%, 93% 23%, 95% 42%);
-      color: white; font-weight: 700; cursor: pointer; filter: drop-shadow(0 2px 2px #0007); }
-    .marker.rg { background: #1769aa; }
-    .marker.wa { background: #b44725; }
+      background: #1769aa; color: white; font-weight: 700; cursor: pointer; filter: drop-shadow(0 2px 2px #0007); }
     .marker:hover, .marker:focus-visible { z-index: 3; scale: 1.14; outline: none; }
     #controls { position: absolute; z-index: 5; top: 12px; right: 12px; display: grid; gap: 6px; }
     #controls button { border: 1px solid #777; background: white; border-radius: 6px; min-width: 38px; min-height: 36px;
@@ -306,6 +304,7 @@ MAP_HTML = r"""<!doctype html>
     #card-content { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; }
     #card-content p { margin: 5px 0; font-size: 13px; }
     #card-content a { color: #075b36; font-weight: 650; }
+    #card-content .card-provider { margin-top: 8px; color: #536158; font-size: 11px; }
     .availability-table-block { display: flex; flex: 1; flex-direction: column; min-height: 120px; }
     .availability-table-block .run-table-shell { flex: 1; max-height: none; }
     .run-table-shell { max-height: min(390px, 56vh); margin: 8px 0 5px; overflow: auto; overscroll-behavior: contain;
@@ -704,8 +703,6 @@ function showLocation(location, anchor = null, pin = false) {
   cardTitle.textContent = location.name;
   availabilityCard.setAttribute("aria-labelledby", "card-title");
   cardContent.replaceChildren();
-  const provider = document.createElement("p");
-  provider.textContent = location.provider;
   const availability = document.createElement("p");
   availability.textContent = `${location.available_sites} site${location.available_sites === 1 ? "" : "s"} · ${formatDate(location.earliest)} – ${formatDate(location.latest_night)}`;
   const runHeading = document.createElement("strong");
@@ -730,7 +727,10 @@ function showLocation(location, anchor = null, pin = false) {
   osm.textContent = "Open location in OpenStreetMap";
   const links = document.createElement("p");
   links.append(link, document.createTextNode(" · "), osm);
-  cardContent.append(provider, availability, runHeading, runTable, distance, links);
+  const provider = document.createElement("p");
+  provider.className = "card-provider";
+  provider.textContent = `Provider: ${location.provider}`;
+  cardContent.append(availability, runHeading, runTable, distance, links, provider);
   availabilityCard.hidden = false;
   if (pin) cardPinned = true;
   updatePinAction();
@@ -757,7 +757,7 @@ function renderMarkers() {
   visibleLocations.forEach((location, index) => {
     const point = project(location.lat, location.lon, zoom);
     const button = document.createElement("button");
-    button.className = `marker ${location.key.startsWith("rg:") ? "rg" : "wa"}`;
+    button.className = "marker";
     button.textContent = String(index + 1);
     button.setAttribute("aria-label", `${location.name}: ${location.available_sites} sites, ${location.earliest} through ${location.latest_night}`);
     button.setAttribute("aria-haspopup", "dialog");

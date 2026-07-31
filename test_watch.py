@@ -281,6 +281,8 @@ class AvailabilityMapTests(unittest.TestCase):
         self.assertIn('id="card-pin"', availability_map.MAP_HTML)
         self.assertIn('resize: both', availability_map.MAP_HTML)
         self.assertIn('function placeCardNear(anchor)', availability_map.MAP_HTML)
+        self.assertNotIn('.marker.rg', availability_map.MAP_HTML)
+        self.assertIn('provider.textContent = `Provider: ${location.provider}`', availability_map.MAP_HTML)
         self.assertIn('function closeLocation()', availability_map.MAP_HTML)
 
 
