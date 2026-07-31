@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.parse
 from pathlib import Path
+from typing import Any
 
 
 HERE = Path(__file__).resolve().parent
 PRIVATE_SETTINGS_FILE = HERE / "secrets" / "config.json"
+PROVIDER_RULES_FILE = HERE / "provider_rules.json"
 
 SETTING_ENV_NAMES = {
     "home_lat": "CAMPWATCH_HOME_LAT",
@@ -17,6 +20,166 @@ SETTING_ENV_NAMES = {
     "webhook_text_key": "CAMPWATCH_WEBHOOK_TEXT_KEY",
     "notify": "CAMPWATCH_NOTIFY",
 }
+
+
+def _required_string(value: Any, description: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"provider_rules.json requires a non-empty {description}")
+    return value.strip()
+
+
+def _positive_number(value: Any, description: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"provider_rules.json requires a positive {description}") from exc
+    if number <= 0:
+        raise RuntimeError(f"provider_rules.json requires a positive {description}")
+    return number
+
+
+def _positive_integer(value: Any, description: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise RuntimeError(f"provider_rules.json requires a positive integer {description}")
+    return value
+
+
+def _https_url(value: Any, description: str) -> str:
+    url = _required_string(value, description)
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise RuntimeError(f"provider_rules.json requires an HTTPS {description}")
+    return url
+
+
+def _string_list(value: Any, description: str) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise RuntimeError(f"provider_rules.json requires {description} as a list")
+    values = tuple(_required_string(item, description).upper() for item in value)
+    if not values:
+        raise RuntimeError(f"provider_rules.json requires at least one {description}")
+    return values
+
+
+def load_provider_rules(path: Path = PROVIDER_RULES_FILE) -> dict[str, Any]:
+    """Load and validate editable provider labels and filtering heuristics."""
+    try:
+        raw = json.loads(path.read_text())
+        recreation_gov = raw["recreation_gov"]
+        going_to_camp = raw["going_to_camp"]
+        watch = raw["watch"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise RuntimeError("provider_rules.json is missing or invalid") from exc
+    if not all(isinstance(value, dict) for value in (recreation_gov, going_to_camp, watch)):
+        raise RuntimeError("provider_rules.json sections must be JSON objects")
+
+    raw_rec_areas = going_to_camp.get("rec_areas")
+    if not isinstance(raw_rec_areas, dict) or not raw_rec_areas:
+        raise RuntimeError("provider_rules.json requires going_to_camp.rec_areas")
+    rec_areas = {}
+    for area_id, label in raw_rec_areas.items():
+        try:
+            parsed_area_id = int(area_id)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("provider_rules.json rec-area IDs must be integers") from exc
+        if parsed_area_id <= 0:
+            raise RuntimeError("provider_rules.json rec-area IDs must be positive")
+        rec_areas[parsed_area_id] = _required_string(label, "rec-area label")
+
+    raw_stay_limits = going_to_camp.get("stay_limits", {})
+    if not isinstance(raw_stay_limits, dict):
+        raise RuntimeError("provider_rules.json requires going_to_camp.stay_limits as an object")
+    stay_limits = {}
+    for area_id, rule in raw_stay_limits.items():
+        try:
+            parsed_area_id = int(area_id)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("provider_rules.json stay-limit rec-area IDs must be integers") from exc
+        if parsed_area_id not in rec_areas or not isinstance(rule, dict):
+            raise RuntimeError("provider_rules.json stay limits must target a configured rec area")
+        stay_limits[parsed_area_id] = {
+            "max_nights": _positive_integer(
+                rule.get("max_nights"), "going_to_camp.stay_limits.max_nights"
+            ),
+            "park_window_days": _positive_integer(
+                rule.get("park_window_days"),
+                "going_to_camp.stay_limits.park_window_days",
+            ),
+            "calendar_year_max_nights": _positive_integer(
+                rule.get("calendar_year_max_nights"),
+                "going_to_camp.stay_limits.calendar_year_max_nights",
+            ),
+            "label": _required_string(
+                rule.get("label"), "going_to_camp.stay_limits.label"
+            ),
+            "source_url": _https_url(
+                rule.get("source_url"), "going_to_camp.stay_limits.source_url"
+            ),
+        }
+
+    estimated_drive = going_to_camp.get("estimated_drive")
+    if not isinstance(estimated_drive, dict):
+        raise RuntimeError("provider_rules.json requires going_to_camp.estimated_drive")
+    return {
+        "recreation_gov": {
+            "state_code": _required_string(
+                recreation_gov.get("state_code"), "recreation_gov.state_code"
+            ).upper(),
+            "state_name": _required_string(
+                recreation_gov.get("state_name"), "recreation_gov.state_name"
+            ),
+            "minimum_rating": _positive_number(
+                recreation_gov.get("minimum_rating"), "recreation_gov.minimum_rating"
+            ),
+            "default_max_distance_km": _positive_number(
+                recreation_gov.get("default_max_distance_km"),
+                "recreation_gov.default_max_distance_km",
+            ),
+        },
+        "going_to_camp": {
+            "rec_areas": rec_areas,
+            "stay_limits": stay_limits,
+            "non_camp_markers": _string_list(
+                going_to_camp.get("non_camp_markers"), "going_to_camp.non_camp_markers"
+            ),
+            "estimated_drive": {
+                "max_hours": _positive_number(
+                    estimated_drive.get("max_hours"), "estimated_drive.max_hours"
+                ),
+                "margin_hours": _positive_number(
+                    estimated_drive.get("margin_hours"), "estimated_drive.margin_hours"
+                ),
+                "road_factor": _positive_number(
+                    estimated_drive.get("road_factor"), "estimated_drive.road_factor"
+                ),
+                "average_kmh": _positive_number(
+                    estimated_drive.get("average_kmh"), "estimated_drive.average_kmh"
+                ),
+            },
+        },
+        "watch": {
+            "group_markers": _string_list(watch.get("group_markers"), "watch.group_markers"),
+        },
+    }
+
+
+def home_coordinates(env: dict[str, str]) -> tuple[float, float]:
+    """Read required, valid home coordinates from private settings or the environment."""
+    names = ("CAMPWATCH_HOME_LAT", "CAMPWATCH_HOME_LON")
+    missing = [name for name in names if not env.get(name, "").strip()]
+    if missing:
+        raise RuntimeError(
+            "set CAMPWATCH_HOME_LAT and CAMPWATCH_HOME_LON in the environment "
+            "or secrets/config.json"
+        )
+    try:
+        latitude = float(env[names[0]])
+        longitude = float(env[names[1]])
+    except ValueError as exc:
+        raise RuntimeError("home coordinates must be numeric") from exc
+    if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+        raise RuntimeError("home coordinates are out of range")
+    return latitude, longitude
 
 
 def load_private_settings(

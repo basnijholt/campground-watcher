@@ -4,7 +4,7 @@
 Strategy:
 - Fetch metadata using either a statewide query (private default) or the
   provider's faster server-side proximity query.
-- Apply one common local validation and kilometer-distance pipeline either way.
+- Apply one common local validation pipeline with straight-line or road route data.
 - Keep reservable overnight campgrounds rated >= 4 stars (or unrated).
 
 Writes candidates.json.
@@ -18,17 +18,16 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from campwatch_config import local_environment
-from campwatch_http import RecreationGovClient, atomic_write_json
+from campwatch_config import home_coordinates, load_provider_rules, local_environment
+from campwatch_http import OsmDrivingRouter, RecreationGovClient, atomic_write_json
 
-LOCAL_ENV = local_environment()
-HOME_LAT = float(LOCAL_ENV.get("CAMPWATCH_HOME_LAT", "47.6062"))
-HOME_LON = float(LOCAL_ENV.get("CAMPWATCH_HOME_LON", "-122.3321"))
-DEFAULT_MAX_DISTANCE_KM = 90.0
+RULES = load_provider_rules()
+RECREATION_GOV_RULES = RULES["recreation_gov"]
+DEFAULT_MAX_DISTANCE_KM = RECREATION_GOV_RULES["default_max_distance_km"]
 KM_PER_MILE = 1.609344
-MIN_RATING = 4.0
-STATE = "WA"
-STATE_NAME = "Washington"
+MIN_RATING = RECREATION_GOV_RULES["minimum_rating"]
+STATE = RECREATION_GOV_RULES["state_code"]
+STATE_NAME = RECREATION_GOV_RULES["state_name"]
 
 HERE = Path(__file__).parent
 OUT = HERE / "candidates.json"
@@ -55,7 +54,7 @@ def fetch_catalog(
     sleeper: Callable[[float], None] = time.sleep,
 ) -> tuple[list[dict], int]:
     """Fetch source rows; only this query shape differs between the two modes."""
-    if distance_filter == "client":
+    if distance_filter in {"client", "drive"}:
         base_params = {"q": STATE_NAME, "sort": "name"}
     elif distance_filter == "server":
         # recreation.gov interprets both radius and returned distance as km.
@@ -68,7 +67,7 @@ def fetch_catalog(
             "sort": "distance",
         }
     else:
-        raise ValueError("distance_filter must be 'client' or 'server'")
+        raise ValueError("distance_filter must be 'client', 'server', or 'drive'")
 
     results = []
     calls = 0
@@ -96,8 +95,12 @@ def select_candidates(
     home_lat: float,
     home_lon: float,
     max_distance_km: float,
+    distance_filter: str = "client",
+    router: OsmDrivingRouter | None = None,
 ) -> list[dict]:
-    """Apply the exact same local rules to server- or client-fetched rows."""
+    """Apply common validation plus a local straight-line or OSM road cutoff."""
+    if distance_filter not in {"client", "server", "drive"}:
+        raise ValueError("distance_filter must be 'client', 'server', or 'drive'")
     candidates = []
     seen = set()
     for r in rows:
@@ -117,8 +120,10 @@ def select_candidates(
             lat = lon = None
         if lat is None or lon is None:
             continue
-        distance_km = haversine_km(home_lat, home_lon, lat, lon)
-        if distance_km > max_distance_km:
+        straight_line_km = haversine_km(home_lat, home_lon, lat, lon)
+        # A drivable route cannot be shorter than the direct geodesic distance,
+        # so this is a lossless local prefilter before any routing request.
+        if straight_line_km > max_distance_km:
             continue
         try:
             campsite_count = int(r.get("campsites_count") or 0)
@@ -143,8 +148,10 @@ def select_candidates(
                 "name": r.get("name"),
                 "lat": lat,
                 "lon": lon,
-                "distance_km": round(distance_km, 1),
-                "dist_mi": round(distance_km / KM_PER_MILE, 1),
+                "distance_km": round(straight_line_km, 1),
+                "dist_mi": round(straight_line_km / KM_PER_MILE, 1),
+                "straight_line_km": round(straight_line_km, 1),
+                "distance_method": "straight_line",
                 "rating": rating,
                 "num_ratings": r.get("number_of_ratings"),
                 "parent": r.get("parent_name"),
@@ -152,6 +159,30 @@ def select_candidates(
                 "campsites_count": campsite_count,
             }
         )
+    if distance_filter == "drive":
+        if router is None:
+            raise ValueError("a router is required for drive filtering")
+        routed_routes = router.driving_routes(
+            home_lat, home_lon, [(candidate["lat"], candidate["lon"]) for candidate in candidates]
+        )
+        if len(routed_routes) != len(candidates):
+            raise RuntimeError("routing response did not match the candidate list")
+        routed_candidates = []
+        for candidate, (driving_km, driving_seconds) in zip(candidates, routed_routes):
+            if (
+                driving_km is None
+                or driving_seconds is None
+                or driving_km > max_distance_km
+            ):
+                continue
+            candidate["distance_km"] = round(driving_km, 1)
+            candidate["dist_mi"] = round(driving_km / KM_PER_MILE, 1)
+            candidate["driving_km"] = round(driving_km, 1)
+            candidate["osrm_duration_seconds"] = round(driving_seconds)
+            candidate["drive_time_source"] = "openstreetmap_osrm"
+            candidate["distance_method"] = "driving"
+            routed_candidates.append(candidate)
+        candidates = routed_candidates
     candidates.sort(key=lambda c: (c["distance_km"], str(c["name"])))
     return candidates
 
@@ -167,23 +198,30 @@ def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--distance-filter",
-        choices=("client", "server"),
+        choices=("client", "server", "drive"),
         default="client",
         help=(
             "client keeps coordinates local (default); server sends coordinates "
-            "to recreation.gov for a faster proximity query"
+            "to recreation.gov for a faster proximity query; drive sends them "
+            "to OpenStreetMap routing for a road-distance/time cutoff"
         ),
     )
     parser.add_argument(
         "--max-distance-km",
         type=_positive_distance,
         default=DEFAULT_MAX_DISTANCE_KM,
-        help=f"straight-line cutoff in kilometers (default: {DEFAULT_MAX_DISTANCE_KM:g})",
+        help=f"distance cutoff in kilometers (default: {DEFAULT_MAX_DISTANCE_KM:g})",
     )
     args = parser.parse_args(argv)
+    home_lat, home_lon = home_coordinates(local_environment())
 
     if args.distance_filter == "server":
         print("Server filtering selected: sending coordinates to recreation.gov.")
+    elif args.distance_filter == "drive":
+        print(
+            "Driving filtering selected: querying OpenStreetMap routing with the "
+            "home and candidate coordinates; Recreation.gov server filtering is disabled."
+        )
     else:
         print("Client filtering selected: coordinates remain local.")
     print(
@@ -193,15 +231,17 @@ def main(argv: list[str] | None = None):
     raw, calls = fetch_catalog(
         HTTP,
         distance_filter=args.distance_filter,
-        home_lat=HOME_LAT,
-        home_lon=HOME_LON,
+        home_lat=home_lat,
+        home_lon=home_lon,
         max_distance_km=args.max_distance_km,
     )
     candidates = select_candidates(
         raw,
-        home_lat=HOME_LAT,
-        home_lon=HOME_LON,
+        home_lat=home_lat,
+        home_lon=home_lon,
         max_distance_km=args.max_distance_km,
+        distance_filter=args.distance_filter,
+        router=OsmDrivingRouter() if args.distance_filter == "drive" else None,
     )
     atomic_write_json(OUT, candidates, mode=0o644)
     print(
@@ -210,7 +250,8 @@ def main(argv: list[str] | None = None):
     )
     for c in candidates:
         rt = f"{c['rating']}*({c['num_ratings']})" if c["rating"] is not None else "unrated"
-        distance = f"{c['distance_km']}km/{c['dist_mi']}mi"
+        method = "drive" if c.get("distance_method") == "driving" else "direct"
+        distance = f"{method} {c['distance_km']}km/{c['dist_mi']}mi"
         print(f"  #{str(c['id']):>8}  {distance:>15}  {rt:>10}  {c['name']}")
 
 

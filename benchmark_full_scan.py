@@ -6,13 +6,14 @@ measured once and included in both totals.
 """
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import json
-import subprocess
 import time
 
 import benchmark_discovery
 import watch
+from campwatch_config import home_coordinates, local_environment
 from campwatch_http import GoingToCampClient, RecreationGovClient
 
 
@@ -25,13 +26,30 @@ def measured_call(function, *args, **kwargs):
         return time.perf_counter() - began, None, type(exc).__name__
 
 
-def main():
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--max-distance-km",
+        type=benchmark_discovery.build_candidates._positive_distance,
+        default=benchmark_discovery.build_candidates.DEFAULT_MAX_DISTANCE_KM,
+    )
+    args = parser.parse_args(argv)
+    home_lat, home_lon = home_coordinates(local_environment())
+    discovery_options = {
+        "home_lat": home_lat,
+        "home_lon": home_lon,
+        "max_distance_km": args.max_distance_km,
+    }
     start = dt.date.today()
     end = start + dt.timedelta(days=watch.WINDOW_DAYS)
 
     discovery_client = RecreationGovClient()
-    server_discovery = benchmark_discovery.server_pipeline(discovery_client)
-    client_discovery = benchmark_discovery.client_pipeline(discovery_client)
+    server_discovery = benchmark_discovery.server_pipeline(
+        discovery_client, **discovery_options
+    )
+    client_discovery = benchmark_discovery.client_pipeline(
+        discovery_client, **discovery_options
+    )
     server_ids = server_discovery["scan_ids"]
     client_ids = client_discovery["scan_ids"]
     union_ids = sorted(server_ids | client_ids)
@@ -62,10 +80,8 @@ def main():
             flush=True,
         )
 
-    old_config = json.loads(
-        subprocess.check_output(["git", "show", "main:watch_config.json"])
-    )
-    wa_targets = old_config["going_to_camp"]
+    current_config = json.loads(watch.CONFIG.read_text())
+    wa_targets = current_config["going_to_camp"]
     print(f"Washington availability: {len(wa_targets)} shared targets", flush=True)
     watch._booking_categories_cache.clear()
     watch._sub_equipment_cache.clear()

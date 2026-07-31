@@ -2,34 +2,37 @@
 """Compare server- and client-side discovery through the production code path."""
 from __future__ import annotations
 
+import argparse
 import json
 import time
 
 import build_candidates
 import watch
+from campwatch_config import home_coordinates, local_environment
 from campwatch_http import RecreationGovClient
 
 
-# Use the original public repository coordinates for a reproducible experiment.
-LAT = 47.6062
-LON = -122.3321
-MAX_DISTANCE_KM = 90.0
-
-
-def run_pipeline(client, distance_filter: str):
+def run_pipeline(
+    client,
+    distance_filter: str,
+    *,
+    home_lat: float,
+    home_lon: float,
+    max_distance_km: float,
+):
     began = time.perf_counter()
     rows, calls = build_candidates.fetch_catalog(
         client,
         distance_filter=distance_filter,
-        home_lat=LAT,
-        home_lon=LON,
-        max_distance_km=MAX_DISTANCE_KM,
+        home_lat=home_lat,
+        home_lon=home_lon,
+        max_distance_km=max_distance_km,
     )
     candidates = build_candidates.select_candidates(
         rows,
-        home_lat=LAT,
-        home_lon=LON,
-        max_distance_km=MAX_DISTANCE_KM,
+        home_lat=home_lat,
+        home_lon=home_lon,
+        max_distance_km=max_distance_km,
     )
     elapsed = time.perf_counter() - began
     scan_candidates = [
@@ -55,25 +58,38 @@ def run_pipeline(client, distance_filter: str):
     }
 
 
-def server_pipeline(client):
-    return run_pipeline(client, "server")
+def server_pipeline(client, **options):
+    return run_pipeline(client, "server", **options)
 
 
-def client_pipeline(client):
-    return run_pipeline(client, "client")
+def client_pipeline(client, **options):
+    return run_pipeline(client, "client", **options)
 
 
-def main():
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--max-distance-km",
+        type=build_candidates._positive_distance,
+        default=build_candidates.DEFAULT_MAX_DISTANCE_KM,
+    )
+    args = parser.parse_args(argv)
+    home_lat, home_lon = home_coordinates(local_environment())
+    options = {
+        "home_lat": home_lat,
+        "home_lon": home_lon,
+        "max_distance_km": args.max_distance_km,
+    }
     client = RecreationGovClient()
-    server = server_pipeline(client)
-    local = client_pipeline(client)
+    server = server_pipeline(client, **options)
+    local = client_pipeline(client, **options)
     server_ids = server.pop("scan_ids")
     local_ids = local.pop("scan_ids")
     server.pop("scan_details")
     local.pop("scan_details")
     result = {
-        "coordinates": [LAT, LON],
-        "max_distance_km": MAX_DISTANCE_KM,
+        "coordinates": [home_lat, home_lon],
+        "max_distance_km": args.max_distance_km,
         "server_side": server,
         "client_side": local,
         "overlap": len(server_ids & local_ids),

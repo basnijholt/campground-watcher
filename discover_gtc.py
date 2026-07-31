@@ -8,16 +8,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from campwatch_config import load_provider_rules
 from campwatch_http import GoingToCampClient, atomic_write_json
 
 HERE = Path(__file__).parent
 OUT = HERE / "gtc_campgrounds.json"
 
-# GoingToCamp recreation-area IDs for the two supported Washington providers.
-WA_REC_AREAS = {
-    3: "Washington State Parks",
-    6: "Tacoma Power Parks",
-}
+WA_REC_AREAS = load_provider_rules()["going_to_camp"]["rec_areas"]
 
 
 def main():

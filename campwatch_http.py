@@ -10,6 +10,7 @@ import json
 import os
 import random
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -27,6 +28,7 @@ USER_AGENT = (
 )
 MAX_JSON_BYTES = 20 * 1024 * 1024
 RECREATION_GOV_HOST = "www.recreation.gov"
+OSM_ROUTING_HOST = "routing.openstreetmap.de"
 
 
 def atomic_write_json(path: Path, value: Any, mode: int = 0o600) -> None:
@@ -58,6 +60,54 @@ class HttpRequestError(RuntimeError):
         super().__init__(message)
         self.status = status
         self.retry_after = retry_after
+
+
+class RequestPacer:
+    """Coordinate a small, shared request rate across worker threads.
+
+    One instance is shared for a single upstream provider.  It spaces request
+    *starts* without serializing the whole response body, so slow network I/O
+    can overlap while a provider still sees a deliberately modest request rate.
+    When any worker is throttled, :meth:`defer` pauses all of that provider's
+    workers before their next request.
+    """
+
+    def __init__(
+        self,
+        min_interval: float,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
+    ):
+        if min_interval < 0:
+            raise ValueError("request pacing interval must be non-negative")
+        self.min_interval = float(min_interval)
+        self.monotonic = monotonic
+        self.sleeper = sleeper
+        self._lock = threading.Lock()
+        self._next_request_at = 0.0
+
+    def wait(self) -> None:
+        """Wait until this provider may receive another request start."""
+        while True:
+            with self._lock:
+                now = self.monotonic()
+                remaining = self._next_request_at - now
+                if remaining <= 0:
+                    self._next_request_at = now + self.min_interval
+                    return
+            self.sleeper(remaining)
+
+    def defer(self, delay: float) -> None:
+        """Delay all future request starts for the provider by ``delay``."""
+        try:
+            delay = max(0.0, float(delay))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("request pacing delay must be numeric") from exc
+        with self._lock:
+            self._next_request_at = max(
+                self._next_request_at, self.monotonic() + delay
+            )
 
 
 class _NoRedirects(urllib.request.HTTPRedirectHandler):
@@ -110,6 +160,7 @@ class JsonHttpClient:
         sleeper: Callable[[float], None] = time.sleep,
         randomizer: Callable[[], float] = random.random,
         wall_clock: Callable[[], float] = time.time,
+        pacer: RequestPacer | None = None,
     ):
         hosts = frozenset(str(host).lower() for host in allowed_hosts)
         if not hosts or any(not host or "/" in host for host in hosts):
@@ -128,6 +179,7 @@ class JsonHttpClient:
         self.sleeper = sleeper
         self.randomizer = randomizer
         self.wall_clock = wall_clock
+        self.pacer = pacer
 
     def get_json(
         self,
@@ -172,6 +224,8 @@ class JsonHttpClient:
         for attempt in range(self.attempts):
             req = urllib.request.Request(full_url, headers=request_headers, method="GET")
             try:
+                if self.pacer is not None:
+                    self.pacer.wait()
                 with self.opener.open(req, timeout=self.timeout) as response:
                     status = getattr(response, "status", 200)
                     if status >= 300:
@@ -207,6 +261,16 @@ class JsonHttpClient:
                 retryable = exc.status == 429 or (
                     exc.status is not None and 500 <= exc.status < 600
                 )
+            if self.pacer is not None and last_error.status == 429:
+                # Do this even for a final failed attempt.  Other queued
+                # targets must not immediately keep hitting a provider that
+                # just told this worker to slow down.
+                shared_delay = (
+                    last_error.retry_after
+                    if last_error.retry_after is not None
+                    else 2**attempt
+                )
+                self.pacer.defer(min(self.max_retry_delay, shared_delay))
             if not retryable or attempt + 1 >= self.attempts:
                 break
             if last_error.retry_after is not None:
@@ -223,6 +287,96 @@ class JsonHttpClient:
             retry_wait_used += delay
         assert last_error is not None
         raise last_error
+
+
+class OsmDrivingRouter:
+    """Small, bounded client for OpenStreetMap's public OSRM car router.
+
+    This is deliberately used only during an explicit candidate rebuild.  It
+    batches destinations, sends a descriptive User-Agent, and never treats a
+    route failure as a usable distance.
+    """
+
+    PATH = "/routed-car/table/v1/driving"
+    MAX_DESTINATIONS_PER_REQUEST = 25
+
+    def __init__(
+        self,
+        http: JsonHttpClient | None = None,
+        *,
+        sleeper: Callable[[float], None] = time.sleep,
+    ):
+        self.http = http or JsonHttpClient(
+            allowed_hosts=(OSM_ROUTING_HOST,), timeout=45, attempts=2
+        )
+        self.sleeper = sleeper
+
+    @staticmethod
+    def _coordinate(latitude: float, longitude: float) -> str:
+        try:
+            lat = float(latitude)
+            lon = float(longitude)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("routing coordinates must be numeric") from exc
+        if not -90 <= lat <= 90 or not -180 <= lon <= 180:
+            raise ValueError("routing coordinates are out of range")
+        return f"{lon:.6f},{lat:.6f}"
+
+    def driving_routes(
+        self, origin_lat: float, origin_lon: float, destinations: list[tuple[float, float]]
+    ) -> list[tuple[float | None, float | None]]:
+        """Return ``(road km, route seconds)`` per destination, or ``(None, None)``."""
+        origin = self._coordinate(origin_lat, origin_lon)
+        results: list[tuple[float | None, float | None]] = []
+        for offset in range(0, len(destinations), self.MAX_DESTINATIONS_PER_REQUEST):
+            batch = destinations[offset : offset + self.MAX_DESTINATIONS_PER_REQUEST]
+            coordinates = ";".join([origin, *(self._coordinate(*item) for item in batch)])
+            data = self.http.get_json(
+                f"https://{OSM_ROUTING_HOST}{self.PATH}/{coordinates}",
+                params={"sources": "0", "annotations": "distance,duration"},
+                headers={"User-Agent": "campground-watcher/1.0 (local candidate rebuild)"},
+            )
+            distances = data.get("distances") if isinstance(data, dict) else None
+            durations = data.get("durations") if isinstance(data, dict) else None
+            distance_row = (
+                distances[0] if isinstance(distances, list) and len(distances) == 1 else None
+            )
+            duration_row = (
+                durations[0] if isinstance(durations, list) and len(durations) == 1 else None
+            )
+            if (
+                not isinstance(distance_row, list)
+                or not isinstance(duration_row, list)
+                or len(distance_row) != len(batch) + 1
+                or len(duration_row) != len(batch) + 1
+            ):
+                raise HttpRequestError("OpenStreetMap routing returned invalid route data")
+            for meters, seconds in zip(distance_row[1:], duration_row[1:]):
+                if meters is None and seconds is None:
+                    results.append((None, None))
+                elif (
+                    isinstance(meters, (int, float))
+                    and 0 <= meters <= 2_000_000
+                    and isinstance(seconds, (int, float))
+                    and 0 <= seconds <= 172_800
+                ):
+                    results.append((float(meters) / 1000, float(seconds)))
+                else:
+                    raise HttpRequestError("OpenStreetMap routing returned invalid route data")
+            if offset + len(batch) < len(destinations):
+                self.sleeper(1.0)
+        return results
+
+    def driving_distances_km(
+        self, origin_lat: float, origin_lon: float, destinations: list[tuple[float, float]]
+    ) -> list[float | None]:
+        """Compatibility helper returning only the road-distance component."""
+        return [
+            distance
+            for distance, _duration in self.driving_routes(
+                origin_lat, origin_lon, destinations
+            )
+        ]
 
 
 GTC_HOSTS = {
@@ -242,8 +396,15 @@ GTC_ENDPOINTS = {
 class GoingToCampClient:
     """Minimal allow-listed client for the two GoingToCamp areas we support."""
 
-    def __init__(self, http: JsonHttpClient | None = None):
-        self.http = http or JsonHttpClient(allowed_hosts=GTC_HOSTS.values())
+    def __init__(
+        self,
+        http: JsonHttpClient | None = None,
+        *,
+        pacer: RequestPacer | None = None,
+    ):
+        self.http = http or JsonHttpClient(
+            allowed_hosts=GTC_HOSTS.values(), pacer=pacer
+        )
 
     def request_json(
         self,
@@ -291,8 +452,15 @@ class GoingToCampClient:
 class RecreationGovClient:
     """Provider-specific recreation.gov client with fixed hosts and paths."""
 
-    def __init__(self, http: JsonHttpClient | None = None):
-        self.http = http or JsonHttpClient(allowed_hosts={RECREATION_GOV_HOST})
+    def __init__(
+        self,
+        http: JsonHttpClient | None = None,
+        *,
+        pacer: RequestPacer | None = None,
+    ):
+        self.http = http or JsonHttpClient(
+            allowed_hosts={RECREATION_GOV_HOST}, pacer=pacer
+        )
 
     def search(self, params: dict[str, Any]) -> dict:
         data = self.http.get_json(
