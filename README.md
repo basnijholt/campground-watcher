@@ -12,8 +12,8 @@ a timer. It installs nothing and uses only the Python standard library.
 
 > **Note:** the watcher *finds and notifies* about openings. It does not book for
 > you (recreation.gov and WA State Parks both require your own login to reserve).
-> Provider links are a convenience for reviewing availability; they are not a
-> confirmation that a particular site can be reserved.
+> Provider links start a booking with the displayed observed dates; they are not
+> a confirmation that a particular site can be reserved.
 
 ## Features
 
@@ -27,7 +27,7 @@ a timer. It installs nothing and uses only the Python standard library.
   together.
 - **Target-weekend filter** — only alert for the specific weekend(s) you care
   about, or watch everything.
-- **Provider review links** — Washington can pre-fill selected stay dates at the
+- **Provider booking links** — Washington can pre-fill selected stay dates at the
   facility; recreation.gov opens the campground availability page. Neither is a
   booking confirmation.
 - **Change-only, idempotent, de-duplicated** notifications (won't spam you when
@@ -110,9 +110,10 @@ double-click to zoom; the +/− controls work too. When the map has keyboard foc
 the arrow keys pan, +/− zoom, and Home fits the currently displayed campgrounds.
 Long availability tables scroll inside the card while keeping the campground name
 and column headers visible. Results are grouped by check-in day: each compact,
-observed-stay chip shows its nights and observed-site count. The card offers a
-separate provider-review link, rather than presenting the chip as a booking
-link. The status
+observed-stay chip is a booking link and shows its nights and observed-site
+count. The card also has a **Book** link for the first displayed stay. Its footer
+states when the openings were observed and, when a displayed stay exceeds ten
+nights, warns that the provider may not support that duration. The status
 bar reports a warning whenever scan data has not changed for more than one hour.
 It also reports when the local event stream disconnects and reconnects
 automatically after the map server is restarted. When a scan is marked failed, or
@@ -127,7 +128,7 @@ event.
 For Washington State Parks, GoingToCamp supplies opaque internal resource IDs
 instead of useful campsite labels. The map hides those IDs and groups identical
 availability windows, showing the number of sites available for each date range.
-Washington review links can open the provider with a selected stay's dates;
+Washington booking links can open the provider with a selected stay's dates;
 recreation.gov opens the campground's availability page. Recreation.gov does
 not offer a reliable row-specific deep link, so choose the shown site and dates
 there.

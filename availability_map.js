@@ -169,16 +169,16 @@ function availabilityDateGroups(location) {
     .sort((left, right) => left.checkIn.localeCompare(right.checkIn));
 }
 
-function reviewUrlFor(location, run = null) {
+function bookingUrlFor(location, run = null) {
   if (!location.key.startsWith("wa:")) return location.booking_url;
   try {
     const url = new URL(location.booking_url);
-    if (run && location.selected_nights && url.searchParams.has("startDate")) {
+    if (run && url.searchParams.has("startDate")) {
       url.searchParams.set("startDate", run.display_start);
       url.searchParams.set("endDate", addIsoDays(run.display_end, 1));
       return url.href;
     }
-    return `${url.origin}/`;
+    return location.booking_url;
   } catch (error) {
     return location.booking_url;
   }
@@ -189,17 +189,19 @@ function makeStayChip(location, run) {
   const duration = location.selected_nights
     ? `${nights} observed night${nights === 1 ? "" : "s"}`
     : `${nights} consecutive night${nights === 1 ? "" : "s"} observed`;
-  const text = `${duration} · ${run.site_count} site${run.site_count === 1 ? "" : "s"}`;
-  const chip = document.createElement("span");
+  const text = `Book · ${duration} · ${run.site_count} site${run.site_count === 1 ? "" : "s"}`;
+  const chip = document.createElement("a");
   chip.className = "stay-chip";
+  chip.href = bookingUrlFor(location, run);
+  chip.target = "_blank";
+  chip.rel = "noopener";
   chip.textContent = text;
-  chip.title = "Observed availability only; this is not a provider-validated booking.";
-  chip.setAttribute("aria-label", `${text} at ${location.name}, checking in ${formatDate(run.display_start)}. This is not a provider-validated booking.`);
+  chip.title = "Book this observed stay with the provider; availability is not guaranteed.";
+  chip.setAttribute("aria-label", `${text} at ${location.name}, checking in ${formatDate(run.display_start)}. Availability is not guaranteed.`);
   return chip;
 }
 
-function makeAvailabilityTable(location, limit, moreText) {
-  const groups = availabilityDateGroups(location);
+function makeAvailabilityTable(location, limit, moreText, groups = availabilityDateGroups(location)) {
   const container = document.createElement("div");
   const table = document.createElement("table");
   table.className = "run-table";
@@ -503,14 +505,10 @@ function showLocation(location, anchor = null, pin = false) {
       policy.appendChild(source);
     }
   }
-  const verification = document.createElement("p");
-  verification.className = "verification-note";
-  verification.textContent = location.checked_this_scan === false
-    ? "This campground was not checked in the latest scan. Its saved observations may be old; current availability is unknown."
-    : "Observed availability only. No provider reservation validation was performed, so this is not a bookable-site count.";
   const runHeading = document.createElement("strong");
   runHeading.textContent = location.selected_nights ? "Observed coverage by check-in date" : "Observed consecutive stays";
-  const runTable = makeAvailabilityTable(location, Number.POSITIVE_INFINITY, "");
+  const groups = availabilityDateGroups(location);
+  const runTable = makeAvailabilityTable(location, Number.POSITIVE_INFINITY, "", groups);
   runTable.className = "availability-table-block";
   const distance = document.createElement("p");
   const distanceParts = [];
@@ -532,11 +530,11 @@ function showLocation(location, anchor = null, pin = false) {
     driveNote.textContent = "WA/Tacoma Power park-list estimate, calculated locally from distance and average speed; not a routed time.";
   }
   const link = document.createElement("a");
-  const firstGroup = availabilityDateGroups(location)[0];
-  link.href = reviewUrlFor(location, firstGroup?.runs[0]);
+  const firstGroup = groups[0];
+  link.href = bookingUrlFor(location, firstGroup?.runs[0]);
   link.target = "_blank";
   link.rel = "noopener";
-  link.textContent = "Review availability on provider site";
+  link.textContent = "Book";
   const osm = document.createElement("a");
   osm.href = `https://www.openstreetmap.org/?mlat=${location.lat}&mlon=${location.lon}#map=13/${location.lat}/${location.lon}`;
   osm.target = "_blank";
@@ -547,9 +545,31 @@ function showLocation(location, anchor = null, pin = false) {
   const provider = document.createElement("p");
   provider.className = "card-provider";
   provider.textContent = `Provider: ${location.provider}`;
-  const cardParts = [availability, verification];
+  const disclaimer = document.createElement("p");
+  disclaimer.className = "booking-disclaimer";
+  const updated = mapData?.data_updated_at ? new Date(mapData.data_updated_at) : null;
+  const observedMinutes = updated && !Number.isNaN(updated.getTime())
+    ? Math.max(0, Math.floor((Date.now() - updated.getTime()) / 60000))
+    : null;
+  const observedWhen = observedMinutes == null
+    ? "at an unknown time"
+    : `${observedMinutes} minute${observedMinutes === 1 ? "" : "s"} ago`;
+  const hasLongDisplayedStay = groups.some(group => group.runs.some(run =>
+    dayCount(run.display_start, run.display_end) > 10
+  ));
+  const disclaimerParts = [
+    `Availability may have changed: all openings shown were observed ${observedWhen}.`,
+  ];
+  if (location.checked_this_scan === false) {
+    disclaimerParts.push("This campground was not rechecked during the latest scan.");
+  }
+  if (hasLongDisplayedStay) {
+    disclaimerParts.push("The provider may not support booking a reservation for a displayed stay longer than 10 nights.");
+  }
+  disclaimer.textContent = disclaimerParts.join(" ");
+  const cardParts = [availability];
   if (stayLimit) cardParts.push(policy);
-  cardParts.push(runHeading, runTable, distance, driveNote, links, provider);
+  cardParts.push(runHeading, runTable, distance, driveNote, links, provider, disclaimer);
   cardContent.append(...cardParts);
   availabilityCard.hidden = false;
   if (pin) cardPinned = true;
