@@ -5,33 +5,42 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Campground availability map</title>
   <style>
-    :root { color-scheme: light; font-family: ui-sans-serif, system-ui, sans-serif; }
+    :root { color-scheme: light; font-family: ui-sans-serif, system-ui, sans-serif; --touch-target: 44px; }
     * { box-sizing: border-box; }
-    body { margin: 0; color: #17211a; background: #f4f1e8; }
+    html, body { height: 100%; min-height: 0; }
+    body { display: grid; grid-template-rows: auto minmax(0, 1fr); margin: 0; overflow: hidden; color: #17211a; background: #f4f1e8; }
     header { padding: 14px 18px; background: #193c2b; color: white; }
     header h1 { margin: 0 0 4px; font-size: 20px; }
     #status { font-size: 13px; opacity: .9; }
-    #freshness { display: inline-flex; align-items: center; min-height: 24px; margin-top: 7px; padding: 3px 8px;
+    #freshness { display: inline-flex; align-items: center; min-height: var(--touch-target); margin-top: 7px; padding: 5px 10px;
       border: 1px solid #94c7a4; border-radius: 999px; background: #16412d; color: #edf8ef; cursor: default; font: inherit; font-size: 12px; font-weight: 650; text-align: left; }
     #freshness:disabled { opacity: 1; }
     #freshness.stale { border-color: #f7cf83; background: #5b3b12; color: #fff4dc; }
     #freshness.stale:not(:disabled) { cursor: copy; }
     #freshness.stale:not(:disabled):hover, #freshness.stale:not(:disabled):focus-visible { border-color: #fff4dc; outline: 2px solid #f7cf83; outline-offset: 2px; }
-    #layout { display: grid; grid-template-columns: minmax(250px, 340px) 1fr; height: calc(100vh - 72px); }
-    #sidebar { overflow: auto; padding: 12px; border-right: 1px solid #c9c5b8; background: #fffdf7; }
+    #layout { display: grid; grid-template-columns: minmax(250px, 340px) minmax(0, 1fr); min-height: 0; overflow: hidden; }
+    #sidebar { min-height: 0; overflow: auto; padding: 12px; border-right: 1px solid #c9c5b8; background: #fffdf7; }
     #filters { margin: 0 0 12px; padding: 10px; border: 1px solid #d4d0c4; border-radius: 9px; background: #f8f6ef; }
     #filters legend { padding: 0 4px; font-size: 13px; font-weight: 700; }
     .date-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .date-fields label { display: grid; gap: 3px; color: #536158; font-size: 11px; font-weight: 650; }
-    .date-fields input { width: 100%; min-width: 0; padding: 6px; border: 1px solid #aaa69b; border-radius: 6px;
-      background: white; color: #17211a; font: inherit; font-size: 12px; }
+    .date-fields input { width: 100%; min-width: 0; min-height: var(--touch-target); padding: 8px; border: 1px solid #aaa69b; border-radius: 6px;
+      background: white; color: #17211a; font: inherit; font-size: 14px; }
     .stay-field { grid-column: 1 / -1; }
     .filter-hint { margin: 7px 0 0; color: #536158; font-size: 11px; line-height: 1.35; }
     .coverage-notice { margin: 7px 0 0; padding: 6px 7px; border: 1px solid #bfd1c4; border-radius: 6px;
       background: #edf5ee; color: #294536; font-size: 11px; line-height: 1.35; }
     .coverage-notice.warning { border-color: #e0b86d; background: #fff5dc; color: #694809; }
+    #browse-controls { margin: 0 0 12px; padding: 10px; border: 1px solid #d4d0c4; border-radius: 9px; background: #f8f6ef; }
+    #browse-controls legend { padding: 0 4px; font-size: 13px; font-weight: 700; }
+    .browse-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .browse-fields label { display: grid; gap: 3px; color: #536158; font-size: 11px; font-weight: 650; }
+    .browse-fields label:first-child { grid-column: 1 / -1; }
+    .browse-fields input, .browse-fields select { width: 100%; min-width: 0; min-height: var(--touch-target); padding: 7px;
+      border: 1px solid #aaa69b; border-radius: 6px; background: white; color: #17211a; font: inherit; font-size: 13px; }
+    input[aria-invalid="true"] { border-color: #a23b22; outline: 2px solid #efb49f; }
     #presets { display: flex; gap: 5px; margin-top: 8px; }
-    #presets button { flex: 1; padding: 5px 3px; border: 1px solid #aaa69b; border-radius: 6px; background: white;
+    #presets button { flex: 1; min-height: var(--touch-target); padding: 7px 4px; border: 1px solid #aaa69b; border-radius: 6px; background: white;
       color: #284034; cursor: pointer; font-size: 11px; }
     #presets button:hover, #presets button:focus-visible { border-color: #23704a; outline: 1px solid #23704a; }
     #summary { font-size: 14px; margin: 2px 2px 12px; }
@@ -41,18 +50,20 @@
     .location:hover, .location:focus-visible { border-color: #23704a; outline: 2px solid #a9d8bd; }
     .location strong { display: block; font-size: 14px; }
     .meta { display: block; margin-top: 4px; color: #536158; font-size: 12px; }
-    #map { position: relative; overflow: hidden; min-height: 420px; background: #dce6dc; cursor: grab; touch-action: none; }
+    #map { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #dce6dc; cursor: grab; touch-action: none; }
     #map:focus-visible { outline: 3px solid #1769aa; outline-offset: -3px; }
     #map.panning, #map.panning * { cursor: grabbing !important; }
     #tiles, #markers, #cards { position: absolute; inset: 0; overflow: hidden; }
     #cards { z-index: 8; pointer-events: none; }
     #tiles img { position: absolute; width: 256px; height: 256px; user-select: none; }
-    .marker { position: absolute; transform: translate(-50%, -100%); width: 30px; height: 38px; border: 0;
+    .marker { position: absolute; transform: translate(-50%, -100%); width: 44px; height: 48px; border: 0;
       clip-path: polygon(50% 100%, 5% 42%, 7% 23%, 19% 8%, 36% 1%, 64% 1%, 81% 8%, 93% 23%, 95% 42%);
       background: #1769aa; color: white; font-weight: 700; cursor: pointer; filter: drop-shadow(0 2px 2px #0007); }
     .marker:hover, .marker:focus-visible { z-index: 3; scale: 1.14; outline: none; }
+    .marker.cluster { transform: translate(-50%, -50%); height: 44px; border: 3px solid white; border-radius: 50%; clip-path: none;
+      background: #193c2b; box-shadow: 0 2px 8px #0007; }
     #controls { position: absolute; z-index: 5; top: 12px; right: 12px; display: grid; gap: 6px; }
-    #controls button { border: 1px solid #777; background: white; border-radius: 6px; min-width: 38px; min-height: 36px;
+    #controls button { border: 1px solid #777; background: white; border-radius: 6px; min-width: var(--touch-target); min-height: var(--touch-target);
       font-size: 18px; cursor: pointer; }
     .availability-card { position: absolute; display: flex; flex-direction: column; width: min(430px, calc(100% - 24px));
       height: min(520px, calc(100% - 24px)); min-width: 290px; min-height: 230px; max-width: calc(100% - 24px); max-height: calc(100% - 24px);
@@ -60,15 +71,16 @@
     .availability-card.is-focused { border-color: Highlight; box-shadow: inset 0 0 0 3px Highlight, 0 5px 25px #0004; }
     .card-header { display: flex; align-items: center; justify-content: space-between; flex: none; gap: 10px; min-height: 29px; cursor: grab; user-select: none; }
     .card-header.dragging { cursor: grabbing; }
-    .card-title { min-width: 0; overflow: hidden; color: #17211a; font-size: 17px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+    .card-title { min-width: 0; margin: 0; overflow: hidden; color: #17211a; font-size: 17px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
     .card-actions { display: flex; flex: none; gap: 4px; }
-    .card-action { display: grid; place-items: center; width: 29px; height: 29px; padding: 0; border: 1px solid #aaa69b; border-radius: 6px;
+    .card-action { display: grid; place-items: center; width: var(--touch-target); height: var(--touch-target); padding: 0; border: 1px solid #aaa69b; border-radius: 6px;
       background: white; color: #294536; cursor: pointer; }
     .card-action:hover, .card-action:focus-visible { border-color: #23704a; outline: 2px solid #a9d8bd; }
     .card-action[aria-pressed="true"] { border-color: #193c2b; background: #193c2b; color: white; }
     .card-action svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
     .card-content { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; }
     .card-content p { margin: 5px 0; font-size: 13px; }
+    .card-content h3 { margin: 7px 0 2px; font-size: 15px; }
     .card-content a { color: #075b36; font-weight: 650; }
     .card-content .card-provider { margin-top: 8px; color: #536158; font-size: 11px; }
     .card-content .drive-note { margin-top: 1px; color: #536158; font-size: 11px; }
@@ -88,9 +100,11 @@
     .run-table tbody tr:hover { background: #eaf4ed; }
     .run-table tbody tr:last-child td, .run-table tbody tr:last-child th { border-bottom: 0; }
     .stay-options { display: flex; flex-wrap: wrap; gap: 6px; }
-    .stay-chip { display: inline-flex; align-items: center; min-height: 28px; padding: 3px 8px; border: 1px solid #28714c;
+    .stay-chip { display: inline-flex; align-items: center; min-height: var(--touch-target); padding: 5px 10px; border: 1px solid #28714c;
       border-radius: 999px; background: #eaf5ed; color: #075b36; font-weight: 750; line-height: 1.15; text-decoration: none; }
-    .more-runs { margin: 5px 1px 8px; color: #536158; font-size: 11px; }
+    .expand-results { min-height: var(--touch-target); margin: 5px 0; padding: 6px 10px; border: 1px solid #8aa797; border-radius: 6px;
+      background: #f5faf6; color: #075b36; cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; }
+    .expand-results:hover, .expand-results:focus-visible { border-color: #23704a; outline: 2px solid #a9d8bd; }
     #shortcut-help-backdrop { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; padding: 28px; background: #0009; }
     #shortcut-help-backdrop[hidden] { display: none; }
     #shortcut-help { width: min(960px, 100%); max-height: min(760px, 100%); overflow: auto; box-sizing: border-box; padding: 22px;
@@ -98,7 +112,7 @@
     #shortcut-help:focus { outline: 3px solid Highlight; outline-offset: 2px; }
     .shortcut-help-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding-bottom: 12px; border-bottom: 1px solid #a1a1a1; }
     .shortcut-help-heading h2 { margin: 0; font-size: 20px; }
-    #shortcut-help-close { border: 0; background: transparent; color: #fbef38; font: inherit; font-weight: 750; cursor: pointer; text-decoration: underline; }
+    #shortcut-help-close { min-width: var(--touch-target); min-height: var(--touch-target); border: 0; background: transparent; color: #fbef38; font: inherit; font-weight: 750; cursor: pointer; text-decoration: underline; }
     .shortcut-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 26px 42px; margin-top: 20px; }
     .shortcut-group h3 { margin: 0 0 8px; color: #fbef38; font-size: 15px; }
     .shortcut-group dl { display: grid; grid-template-columns: max-content 1fr; gap: 7px 10px; margin: 0; }
@@ -109,9 +123,9 @@
     #attribution a { color: #17472e; }
     .empty { padding: 20px 8px; color: #536158; }
     @media (max-width: 760px) {
-      #layout { grid-template-columns: 1fr; grid-template-rows: 38vh 1fr; height: calc(100vh - 72px); }
+      #layout { grid-template-columns: 1fr; grid-template-rows: minmax(220px, 38%) minmax(0, 1fr); }
       #sidebar { border-right: 0; border-bottom: 1px solid #c9c5b8; }
-      #map { min-height: 340px; }
+      .date-fields input, .browse-fields input, .browse-fields select { font-size: 16px; }
       #shortcut-help-backdrop { padding: 12px; }
       #shortcut-help { padding: 16px; }
       .shortcut-groups { grid-template-columns: 1fr; gap: 22px; }
@@ -127,15 +141,25 @@
         <div class="date-fields">
           <label>From <input id="date-from" type="date"></label>
           <label>Through <input id="date-through" type="date"></label>
-          <label class="stay-field">Stay length, nights <input id="stay-nights" type="number" min="1" inputmode="numeric" placeholder="Any length"></label>
+          <label class="stay-field">Stay length, nights <input id="stay-nights" type="number" min="1" max="90" step="1" inputmode="numeric" placeholder="Any length" aria-describedby="stay-validation-notice"></label>
         </div>
         <p class="filter-hint">Results update immediately from saved scans. Choose a stay length to count sites with observed coverage for each check-in date; leave it blank to browse consecutive open nights. These counts are not provider-validated bookings.</p>
         <p id="coverage-notice" class="coverage-notice" role="status"></p>
+        <p id="stay-validation-notice" class="coverage-notice warning" role="alert" hidden></p>
         <p id="stay-limit-notice" class="coverage-notice warning" role="status" hidden></p>
         <div id="presets" aria-label="Date range presets">
           <button type="button" data-days="7">Next 7 days</button>
           <button type="button" data-days="30">Next 30 days</button>
           <button type="button" data-days="all">All results</button>
+        </div>
+      </fieldset>
+      <fieldset id="browse-controls">
+        <legend>Find and sort campgrounds</legend>
+        <div class="browse-fields">
+          <label>Search <input id="campground-search" type="search" placeholder="Campground name"></label>
+          <label>Provider <select id="provider-filter"><option value="all">All providers</option><option value="rg">Recreation.gov</option><option value="wa">WA / Tacoma Power</option></select></label>
+          <label>Latest scan <select id="scan-filter"><option value="all">All results</option><option value="checked">Checked successfully</option><option value="not-checked">Not checked</option></select></label>
+          <label>Sort by <select id="sort-results"><option value="earliest">Earliest opening</option><option value="distance">Nearest / shortest drive</option><option value="name">Name</option><option value="sites">Most sites</option></select></label>
         </div>
       </fieldset>
       <div id="summary" aria-live="polite"></div><div id="locations"></div>
@@ -169,6 +193,7 @@
     </section>
   </div>
 <script src="/card_manager.js" defer></script>
+<script src="/availability_model.js" defer></script>
 <script src="/availability_map.js" defer></script>
 </body>
 </html>

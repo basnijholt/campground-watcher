@@ -1,4 +1,14 @@
 "use strict";
+const {
+  MAX_STAY_NIGHTS,
+  DEFAULT_DATE_PAGE_SIZE,
+  MAX_STAY_OPTIONS_PER_DATE,
+  addIsoDays,
+  normalizeStayNights,
+  stayInputIsValid,
+  lastCheckInDate,
+  plural,
+} = AvailabilityModel;
 const TILE_SIZE = 256;
 const TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const FRESH_SCAN_COMMAND = "python3 watch.py --all-once";
@@ -27,6 +37,7 @@ let recoveryProbeTimer = null;
 
 const SCAN_STALLED_AFTER_SECONDS = 5 * 60;
 const RECOVERY_PROBE_MILLISECONDS = 30 * 1000;
+const MARKER_CLUSTER_DISTANCE = 46;
 
 const map = document.getElementById("map");
 const tiles = document.getElementById("tiles");
@@ -36,7 +47,6 @@ const cardManager = new CardManager({maxPinned: 5});
 const cardElements = new Map();
 const markerElements = new Map();
 const shortcutHelpBackdrop = document.getElementById("shortcut-help-backdrop");
-const shortcutHelp = document.getElementById("shortcut-help");
 const shortcutHelpClose = document.getElementById("shortcut-help-close");
 let shortcutReturnFocus = null;
 const dateFrom = document.getElementById("date-from");
@@ -44,12 +54,13 @@ const dateThrough = document.getElementById("date-through");
 const stayNights = document.getElementById("stay-nights");
 const coverageNotice = document.getElementById("coverage-notice");
 const freshness = document.getElementById("freshness");
-
-function addIsoDays(value, days) {
-  const date = new Date(`${value}T00:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
+const stayValidationNotice = document.getElementById("stay-validation-notice");
+const campgroundSearch = document.getElementById("campground-search");
+const providerFilter = document.getElementById("provider-filter");
+const scanFilter = document.getElementById("scan-filter");
+const sortResults = document.getElementById("sort-results");
+const pageHeader = document.querySelector("body > header");
+const pageMain = document.getElementById("layout");
 
 function dayCount(start, end) {
   return Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86400000) + 1;
@@ -65,8 +76,11 @@ function maxIsoDate(...values) {
 }
 
 function selectedStayNights() {
-  const nights = Number(stayNights.value);
-  return Number.isSafeInteger(nights) && nights >= 1 ? nights : null;
+  return normalizeStayNights(stayNights.value);
+}
+
+function validStayInput() {
+  return stayNights.validity.valid && stayInputIsValid(stayNights.value);
 }
 
 function stayLimitFor(location) {
@@ -225,7 +239,12 @@ function makeStayChip(location, run) {
   return chip;
 }
 
-function makeAvailabilityTable(location, limit, moreText, groups = availabilityDateGroups(location)) {
+function makeAvailabilityTable(
+  location,
+  limit,
+  groups = availabilityDateGroups(location),
+  {onShowMoreDates = null} = {},
+) {
   const container = document.createElement("div");
   const table = document.createElement("table");
   table.className = "run-table";
@@ -253,7 +272,24 @@ function makeAvailabilityTable(location, limit, moreText, groups = availabilityD
     const stays = document.createElement("td");
     const options = document.createElement("div");
     options.className = "stay-options";
-    group.runs.forEach(run => options.appendChild(makeStayChip(location, run)));
+    const initiallyVisible = group.runs.slice(0, MAX_STAY_OPTIONS_PER_DATE);
+    initiallyVisible.forEach(run => options.appendChild(makeStayChip(location, run)));
+    if (group.runs.length > initiallyVisible.length) {
+      const reveal = document.createElement("button");
+      reveal.type = "button";
+      reveal.className = "expand-results";
+      reveal.setAttribute("aria-expanded", "false");
+      reveal.textContent = `Show ${group.runs.length - initiallyVisible.length} more ${plural(group.runs.length - initiallyVisible.length, "stay")}`;
+      reveal.addEventListener("click", () => {
+        const newlyRevealed = group.runs
+          .slice(initiallyVisible.length)
+          .map(run => makeStayChip(location, run));
+        newlyRevealed.forEach(chip => options.insertBefore(chip, reveal));
+        reveal.remove();
+        newlyRevealed[0]?.focus();
+      }, {once: true});
+      options.appendChild(reveal);
+    }
     stays.appendChild(options);
     row.append(checkIn, stays);
     body.appendChild(row);
@@ -266,9 +302,11 @@ function makeAvailabilityTable(location, limit, moreText, groups = availabilityD
   shell.appendChild(table);
   container.appendChild(shell);
   if (groups.length > limit) {
-    const more = document.createElement("p");
-    more.className = "more-runs";
-    more.textContent = `+${groups.length - limit} more check-in day(s)${moreText}`;
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "expand-results";
+    more.textContent = `Show ${Math.min(DEFAULT_DATE_PAGE_SIZE, groups.length - limit)} more check-in ${plural(Math.min(DEFAULT_DATE_PAGE_SIZE, groups.length - limit), "day")}`;
+    more.addEventListener("click", () => onShowMoreDates?.());
     container.appendChild(more);
   }
   return container;
@@ -383,7 +421,11 @@ function syncDateControls() {
   const bounds = coverage || availableBounds();
   if (!bounds) return;
   const first = coverage ? coverage.first_night : bounds.first;
-  const last = coverage ? coverage.last_night : bounds.last;
+  const lastCheckedNight = coverage ? coverage.last_night : bounds.last;
+  const last = maxIsoDate(
+    first,
+    lastCheckInDate(lastCheckedNight, selectedStayNights()),
+  );
   dateFrom.min = coverage ? first : "";
   dateFrom.max = coverage ? last : "";
   dateThrough.min = coverage ? first : "";
@@ -392,10 +434,16 @@ function syncDateControls() {
     dateFrom.value = first;
     dateThrough.value = last;
     filtersInitialized = true;
+  } else {
+    if (dateFrom.value < first) dateFrom.value = first;
+    if (dateFrom.value > last) dateFrom.value = last;
+    if (dateThrough.value < first) dateThrough.value = first;
+    if (dateThrough.value > last) dateThrough.value = last;
   }
 }
 
 function filterLocation(location) {
+  if (!validStayInput()) return null;
   const first = dateFrom.value;
   const last = dateThrough.value;
   const coverage = coverageBounds();
@@ -450,11 +498,40 @@ function filterLocation(location) {
   };
 }
 
+function comparableTravelHours(location) {
+  if (Number.isFinite(Number(location.osrm_duration_seconds))) return Number(location.osrm_duration_seconds) / 3600;
+  if (Number.isFinite(Number(location.est_drive_hrs))) return Number(location.est_drive_hrs);
+  if (Number.isFinite(Number(location.distance_km))) return Number(location.distance_km) / 60;
+  if (Number.isFinite(Number(location.distance_mi))) return Number(location.distance_mi) * 1.609344 / 60;
+  return Number.POSITIVE_INFINITY;
+}
+
 function filteredLocationList() {
-  return mapData.locations
+  const query = campgroundSearch.value.trim().toLocaleLowerCase();
+  const provider = providerFilter.value;
+  const scanState = scanFilter.value;
+  const locations = mapData.locations
     .map(filterLocation)
     .filter(Boolean)
-    .sort((left, right) => left.earliest.localeCompare(right.earliest) || left.name.localeCompare(right.name));
+    .filter(location => !query || location.name.toLocaleLowerCase().includes(query))
+    .filter(location => provider === "all" || location.key.startsWith(`${provider}:`))
+    .filter(location => {
+      if (scanState === "checked") return location.checked_this_scan === true;
+      if (scanState === "not-checked") return location.checked_this_scan === false;
+      return true;
+    });
+  const sorters = {
+    distance: (left, right) => comparableTravelHours(left) - comparableTravelHours(right),
+    name: (left, right) => left.name.localeCompare(right.name),
+    sites: (left, right) => right.available_sites - left.available_sites,
+    earliest: (left, right) => left.earliest.localeCompare(right.earliest),
+  };
+  const primary = sorters[sortResults.value] || sorters.earliest;
+  return locations.sort((left, right) =>
+    primary(left, right)
+    || left.earliest.localeCompare(right.earliest)
+    || left.name.localeCompare(right.name)
+  );
 }
 
 function project(lat, lon, z) {
@@ -527,7 +604,7 @@ function renderTiles() {
   });
 }
 
-function createCardElement(key) {
+function createCardElement(key, returnFocus = null) {
   const element = document.createElement("aside");
   element.className = "availability-card";
   element.dataset.cardKey = key;
@@ -537,7 +614,7 @@ function createCardElement(key) {
   element.tabIndex = -1;
   const header = document.createElement("div");
   header.className = "card-header";
-  const title = document.createElement("strong");
+  const title = document.createElement("h2");
   title.className = "card-title";
   const titleId = `card-title-${++cardDomId}`;
   title.id = titleId;
@@ -560,7 +637,17 @@ function createCardElement(key) {
   content.className = "card-content";
   element.append(header, content);
   cards.appendChild(element);
-  const view = {element, header, title, content, pin, close, resizeObserver: null};
+  const view = {
+    element,
+    header,
+    title,
+    content,
+    pin,
+    close,
+    resizeObserver: null,
+    rowLimit: DEFAULT_DATE_PAGE_SIZE,
+    returnFocus,
+  };
   cardElements.set(key, view);
 
   pin.addEventListener("click", () => {
@@ -623,10 +710,14 @@ function destroyCardElement(key) {
 }
 
 function closeCard(key, {explicit = false} = {}) {
+  const returnFocus = cardElements.get(key)?.returnFocus;
   if (!cardManager.close(key, {explicit})) return false;
   destroyCardElement(key);
   if (cardManager.focusedId) focusCard(cardManager.focusedId, {moveFocus: explicit});
-  else if (explicit) map.focus({preventScroll: true});
+  else if (explicit) {
+    const target = returnFocus?.isConnected ? returnFocus : map;
+    target.focus({preventScroll: true});
+  }
   return true;
 }
 
@@ -664,10 +755,18 @@ function renderLocationCard(location, view) {
       policy.appendChild(source);
     }
   }
-  const runHeading = document.createElement("strong");
+  const runHeading = document.createElement("h3");
   runHeading.textContent = location.selected_nights ? "Observed coverage by check-in date" : "Observed consecutive stays";
   const groups = availabilityDateGroups(location);
-  const runTable = makeAvailabilityTable(location, Number.POSITIVE_INFINITY, "", groups);
+  const visibleRowCount = Math.min(view.rowLimit, groups.length);
+  const runTable = makeAvailabilityTable(location, visibleRowCount, groups, {
+    onShowMoreDates: () => {
+      view.rowLimit = Math.min(groups.length, view.rowLimit + DEFAULT_DATE_PAGE_SIZE);
+      renderLocationCard(location, view);
+      const nextControl = view.content.querySelector(".availability-table-block > .expand-results");
+      (nextControl || view.content.querySelector(".run-table-shell"))?.focus();
+    },
+  });
   runTable.className = "availability-table-block";
   const distance = document.createElement("p");
   const distanceParts = [];
@@ -747,9 +846,13 @@ function renderUnavailableCard(key) {
   applyCardLayout(key);
 }
 
-function showLocation(location, anchor = null) {
+function showLocation(location, anchor = null, returnFocus = null) {
   const existing = cardManager.get(location.key);
   if (existing) {
+    const existingView = cardElements.get(location.key);
+    if (existingView && (returnFocus || anchor)) {
+      existingView.returnFocus = returnFocus || anchor;
+    }
     focusCard(location.key, {moveFocus: true});
     return;
   }
@@ -757,7 +860,7 @@ function showLocation(location, anchor = null) {
   const position = anchor ? placeCardNear(anchor, provisionalSize) : defaultCardPosition(provisionalSize);
   const result = cardManager.open({key: location.key, position, size: provisionalSize});
   result.closedKeys.forEach(destroyCardElement);
-  const view = createCardElement(location.key);
+  const view = createCardElement(location.key, returnFocus || anchor);
   renderLocationCard(location, view);
   const size = cardSize(view);
   cardManager.updateLayout(location.key, {position: anchor ? placeCardNear(anchor, size) : defaultCardPosition(size), size});
@@ -778,17 +881,66 @@ function renderMarkers() {
   markerElements.clear();
   if (!mapData) return;
   const origin = viewportOrigin();
+  const clusters = [];
   visibleLocations.forEach((location, index) => {
-    const point = project(location.lat, location.lon, zoom);
+    const world = project(location.lat, location.lon, zoom);
+    const point = {x: world.x - origin.x, y: world.y - origin.y};
+    const nearby = clusters.find(cluster =>
+      Math.hypot(cluster.x - point.x, cluster.y - point.y) < MARKER_CLUSTER_DISTANCE
+    );
+    if (nearby) {
+      nearby.items.push({location, index});
+      nearby.x = nearby.items.reduce((sum, item) => {
+        const projected = project(item.location.lat, item.location.lon, zoom);
+        return sum + projected.x - origin.x;
+      }, 0) / nearby.items.length;
+      nearby.y = nearby.items.reduce((sum, item) => {
+        const projected = project(item.location.lat, item.location.lon, zoom);
+        return sum + projected.y - origin.y;
+      }, 0) / nearby.items.length;
+    } else {
+      clusters.push({x: point.x, y: point.y, items: [{location, index}]});
+    }
+  });
+  clusters.forEach(cluster => {
+    if (cluster.items.length > 1) {
+      const button = document.createElement("button");
+      button.className = "marker cluster";
+      button.textContent = String(cluster.items.length);
+      button.setAttribute(
+        "aria-label",
+        zoom < MAX_ZOOM
+          ? `${cluster.items.length} nearby campgrounds; zoom in to separate them`
+          : `${cluster.items.length} overlapping campgrounds; open the first result`,
+      );
+      button.style.left = `${cluster.x}px`;
+      button.style.top = `${cluster.y}px`;
+      button.addEventListener("click", () => {
+        if (zoom >= MAX_ZOOM) {
+          focusLocation(cluster.items[0].location, button);
+          return;
+        }
+        center = {
+          lat: cluster.items.reduce((sum, item) => sum + item.location.lat, 0) / cluster.items.length,
+          lon: cluster.items.reduce((sum, item) => sum + item.location.lon, 0) / cluster.items.length,
+        };
+        zoom = Math.min(MAX_ZOOM, zoom + 2);
+        renderMap();
+        map.focus({preventScroll: true});
+      });
+      markers.appendChild(button);
+      return;
+    }
+    const {location, index} = cluster.items[0];
     const button = document.createElement("button");
     button.className = "marker";
     button.textContent = String(index + 1);
     const scanState = location.checked_this_scan === false ? "; not checked in the latest scan" : "";
     button.setAttribute("aria-label", `${location.name}: ${location.available_sites} sites with observed availability, ${location.earliest} through ${location.latest_night}${scanState}`);
     button.setAttribute("aria-haspopup", "dialog");
-    button.style.left = `${point.x - origin.x}px`;
-    button.style.top = `${point.y - origin.y}px`;
-    button.addEventListener("click", () => showLocation(location, button));
+    button.style.left = `${cluster.x}px`;
+    button.style.top = `${cluster.y}px`;
+    button.addEventListener("click", () => showLocation(location, button, button));
     markers.appendChild(button);
     markerElements.set(location.key, button);
   });
@@ -865,11 +1017,11 @@ function fitAll() {
   renderMap();
 }
 
-function focusLocation(location) {
+function focusLocation(location, returnFocus = null) {
   center = {lat: location.lat, lon: location.lon};
   zoom = Math.max(zoom, 10);
   renderMap();
-  showLocation(location, markerElements.get(location.key) || null);
+  showLocation(location, markerElements.get(location.key) || null, returnFocus);
 }
 
 function renderSidebar() {
@@ -877,7 +1029,16 @@ function renderSidebar() {
   const summary = document.getElementById("summary");
   list.replaceChildren();
   renderCoverageNotice();
+  renderStayValidationNotice();
   renderStayLimitNotice();
+  if (!validStayInput()) {
+    summary.textContent = `Enter a whole stay length from 1 to ${MAX_STAY_NIGHTS} nights.`;
+    const invalid = document.createElement("div");
+    invalid.className = "empty";
+    invalid.textContent = "Results are hidden until the stay length is valid.";
+    list.appendChild(invalid);
+    return;
+  }
   const nights = selectedStayNights();
   const filterDescription = dateFrom.value && dateThrough.value
     ? ` from ${formatDate(dateFrom.value)} through ${formatDate(dateThrough.value)}`
@@ -885,7 +1046,7 @@ function renderSidebar() {
   const stayDescription = nights
     ? ` with a ${nights}-night stay`
     : "";
-  summary.textContent = `${visibleLocations.length} of ${mapData.locations.length} campground(s) have saved observed availability${filterDescription}${stayDescription}.`;
+  summary.textContent = `${visibleLocations.length} of ${mapData.locations.length} ${plural(mapData.locations.length, "campground")} have saved observed availability${filterDescription}${stayDescription}.`;
   if (!visibleLocations.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
@@ -906,11 +1067,20 @@ function renderSidebar() {
     const meta = document.createElement("span");
     meta.className = "meta";
     const scanState = location.checked_this_scan === false ? " · not checked in latest scan" : "";
-    meta.textContent = `${location.available_sites} site(s) · ${location.earliest} → ${location.latest_night} · ${location.provider}${scanState}`;
+    meta.textContent = `${location.available_sites} ${plural(location.available_sites, "site")} · ${formatDate(location.earliest)} → ${formatDate(location.latest_night)} · ${location.provider}${scanState}`;
     button.append(name, meta);
-    button.addEventListener("click", () => focusLocation(location));
+    button.addEventListener("click", () => focusLocation(location, button));
     list.appendChild(button);
   });
+}
+
+function renderStayValidationNotice() {
+  const valid = validStayInput();
+  stayNights.setAttribute("aria-invalid", String(!valid));
+  stayValidationNotice.hidden = valid;
+  stayValidationNotice.textContent = valid
+    ? ""
+    : `Enter a whole stay length from 1 to ${MAX_STAY_NIGHTS} nights.`;
 }
 
 function renderCoverageNotice() {
@@ -943,7 +1113,9 @@ function renderStayLimitNotice() {
     const limit = stayLimitFor(location);
     if (limit) limits.set(`${limit.label}|${limit.max_nights}`, limit);
   });
-  const exceeded = [...limits.values()].filter(limit => nights && nights > limit.max_nights);
+  const exceeded = validStayInput()
+    ? [...limits.values()].filter(limit => nights && nights > limit.max_nights)
+    : [];
   notice.hidden = !exceeded.length;
   if (!exceeded.length) return;
   notice.textContent = exceeded.map(limit =>
@@ -974,20 +1146,29 @@ function applyPreset(days) {
     ? {first: coverage.first_night, last: coverage.last_night}
     : availableBounds();
   if (!bounds) return;
+  const lastCheckIn = maxIsoDate(
+    bounds.first,
+    lastCheckInDate(bounds.last, selectedStayNights()),
+  );
   if (days === "all") {
     dateFrom.value = bounds.first;
-    dateThrough.value = bounds.last;
+    dateThrough.value = lastCheckIn;
     usingAllDates = true;
   } else {
     const today = new Date();
     const localToday = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-    const start = localToday >= bounds.first && localToday <= bounds.last ? localToday : bounds.first;
+    const start = localToday >= bounds.first && localToday <= lastCheckIn ? localToday : bounds.first;
     dateFrom.value = start;
-    dateThrough.value = addIsoDays(start, Number(days) - 1) > bounds.last
-      ? bounds.last
+    dateThrough.value = addIsoDays(start, Number(days) - 1) > lastCheckIn
+      ? lastCheckIn
       : addIsoDays(start, Number(days) - 1);
     usingAllDates = false;
   }
+  renderResults();
+}
+
+function applyStayFilter() {
+  if (validStayInput()) syncDateControls();
   renderResults();
 }
 
@@ -1251,12 +1432,20 @@ function openShortcutHelp() {
   shortcutReturnFocus = document.activeElement;
   clearCardFocus();
   shortcutHelpBackdrop.hidden = false;
-  shortcutHelp.focus({preventScroll: true});
+  pageHeader.inert = true;
+  pageMain.inert = true;
+  pageHeader.setAttribute("aria-hidden", "true");
+  pageMain.setAttribute("aria-hidden", "true");
+  shortcutHelpClose.focus({preventScroll: true});
 }
 
 function closeShortcutHelp() {
   if (shortcutHelpBackdrop.hidden) return;
   shortcutHelpBackdrop.hidden = true;
+  pageHeader.inert = false;
+  pageMain.inert = false;
+  pageHeader.removeAttribute("aria-hidden");
+  pageMain.removeAttribute("aria-hidden");
   shortcutReturnFocus?.focus?.({preventScroll: true});
   shortcutReturnFocus = null;
 }
@@ -1270,7 +1459,11 @@ shortcutHelpBackdrop.addEventListener("pointerdown", event => {
 });
 dateFrom.addEventListener("input", () => applyDateFilter(dateFrom));
 dateThrough.addEventListener("input", () => applyDateFilter(dateThrough));
-stayNights.addEventListener("input", renderResults);
+stayNights.addEventListener("input", applyStayFilter);
+campgroundSearch.addEventListener("input", renderResults);
+providerFilter.addEventListener("change", renderResults);
+scanFilter.addEventListener("change", renderResults);
+sortResults.addEventListener("change", renderResults);
 document.querySelectorAll("#presets button").forEach(button => {
   button.addEventListener("click", () => applyPreset(button.dataset.days));
 });
@@ -1286,6 +1479,9 @@ document.addEventListener("keydown", event => {
     if (event.key === "Escape") {
       event.preventDefault();
       closeShortcutHelp();
+    } else if (event.key === "Tab") {
+      event.preventDefault();
+      shortcutHelpClose.focus({preventScroll: true});
     }
     return;
   }
@@ -1298,6 +1494,7 @@ document.addEventListener("keydown", event => {
     return;
   }
   if (cardManager.focusedId !== cardKey) focusCard(cardKey);
+  const returnFocus = cardElements.get(cardKey)?.returnFocus;
   const action = cardManager.handleKey(event.key);
   if (action.kind === "shortcuts") {
     event.preventDefault();
@@ -1312,7 +1509,10 @@ document.addEventListener("keydown", event => {
     event.preventDefault();
     destroyCardElement(action.cardId);
     if (cardManager.focusedId) focusCard(cardManager.focusedId, {moveFocus: true});
-    else map.focus({preventScroll: true});
+    else {
+      const target = returnFocus?.isConnected ? returnFocus : map;
+      target.focus({preventScroll: true});
+    }
   } else {
     handleMapShortcut(event);
   }

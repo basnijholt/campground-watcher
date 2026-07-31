@@ -106,22 +106,33 @@ opens the relevant card without changing its pin state. The
 check-in-date fields update the campground list, map markers, and any open card
 immediately, locally, without another provider scan. Leave stay length blank to
 browse every recorded option; set it (for example, to two nights) to count only
-sites whose runs cover that stay at each selected check-in date. Each scan now
-records its inclusive checked-night window separately from positive availability.
+sites whose runs cover that stay at each selected check-in date. Stay length is
+limited to a whole number from 1 through 90; invalid values show an inline error
+and hide results instead of attempting unsafe date arithmetic. The full-window
+preset automatically moves the final check-in earlier when a multi-night stay is
+selected, so every displayed check-in remains fully covered by the scan. Each
+scan records its inclusive checked-night window separately from positive
+availability.
 The map displays that window and warns when a selection is wholly or partly
 outside it: un-checked dates are always shown as unknown, never unavailable.
-The 7-day, 30-day, and full-window presets set the same check-in range.
+The 7-day, 30-day, and full-window presets set the same check-in range. Search,
+provider and latest-scan filters narrow the saved results, and the list can be
+sorted by earliest opening, travel proximity, name, or available-site count.
 Drag an empty part of the map to pan. Hover the map and use the mouse wheel or
 double-click to zoom; the +/− controls work too. When the map has keyboard focus,
 the arrow keys pan, +/− (including Command +/−) zoom, and Home fits the currently
 displayed campgrounds. Those map shortcuts are also available from a focused card
 when they are not being used for a card shortcut.
 Long availability tables scroll inside the card while keeping the campground name
-and column headers visible. Results are grouped by check-in day: each compact,
-observed-stay chip is a booking link and shows its nights and observed-site
-count. The card also has a **Book** link for the first displayed stay. Its footer
-states when the openings were observed and, when a displayed stay exceeds ten
-nights, warns that the provider may not support that duration. The status
+and column headers visible. Results are grouped by check-in day and initially show
+14 check-in days and at most three stay options per day; explicit “show more”
+controls reveal additional results without creating hundreds of links at once.
+Each observed-stay chip is a booking link and shows its nights and observed-site
+count. Nearby map markers cluster until zoomed in, reducing overlap without
+hiding their campgrounds from the list. The card also has a **Book** link for the
+first displayed stay. Its footer states when the openings were observed and,
+when a displayed stay exceeds ten nights, warns that the provider may not
+support that duration. The status
 bar reports a warning whenever scan data has not changed for more than one hour.
 It also reports when the local event stream disconnects and reconnects
 automatically after the map server is restarted. When a scan is marked failed, or
@@ -158,6 +169,8 @@ the latest scan is visibly marked as not rechecked; its current availability is
 unknown rather than treated as newly checked.
 Press Ctrl-C in the map server's terminal to stop it.
 
+The loopback server accepts only same-origin browser requests, limits simultaneous
+event streams, denies framing, and serves a restrictive content security policy.
 The map installs no Python package and loads no third-party JavaScript. While the
 map is open, the browser requests only the visible raster tiles from OpenStreetMap
 and displays the required attribution. This reveals your IP address and viewed map
@@ -266,11 +279,16 @@ the Friday night plus the Saturday night:
 
 The watcher POSTs a JSON payload to `CAMPWATCH_WEBHOOK_URL` for each new opening.
 Webhook URLs must use HTTPS, must resolve to public addresses by default, and
-redirects are rejected. These checks prevent accidental plaintext delivery and
-requests to local services.
+redirects are rejected. The validated DNS address is pinned to the TLS connection,
+preventing a second DNS lookup from rebinding the request to a private service.
+These checks prevent accidental plaintext delivery and requests to local services.
 The payload includes a human-readable text field (key configurable) plus
-structured `sites` data with per-site booking URLs. This works out-of-the-box
-with:
+a bounded sample of structured `sites` data with per-site booking URLs, aggregate
+`stay_groups`, and full/truncated counts. Human text, sampled runs, group details,
+and the total JSON body all have explicit size limits. A failed delivery is saved
+atomically to the Git-ignored `webhook_outbox.json` and retried with bounded
+backoff; the completed alert baseline advances only after a send or durable queue
+write succeeds. This works out-of-the-box with:
 
 - **Discord** — use a channel webhook URL, keep `CAMPWATCH_WEBHOOK_TEXT_KEY=content`.
 - **Slack** — incoming webhook URL, set `CAMPWATCH_WEBHOOK_TEXT_KEY=text`.

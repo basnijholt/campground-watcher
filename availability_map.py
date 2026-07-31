@@ -11,6 +11,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import threading
 import time
 import urllib.parse
 import webbrowser
@@ -31,6 +32,7 @@ WA_PARKS = HERE / "wa_parks.json"
 MAP_HTML = (HERE / "availability_map.html").read_text(encoding="utf-8")
 MAP_JS = (HERE / "availability_map.js").read_text(encoding="utf-8")
 CARD_MANAGER_JS = (HERE / "card_manager.js").read_text(encoding="utf-8")
+AVAILABILITY_MODEL_JS = (HERE / "availability_model.js").read_text(encoding="utf-8")
 
 # The map only watches its local, atomically-written source files while a
 # browser has an event-stream connection open.  This avoids a background timer
@@ -39,6 +41,9 @@ EVENT_POLL_SECONDS = 0.25
 EVENT_DEBOUNCE_SECONDS = 0.10
 EVENT_HEARTBEAT_SECONDS = 15.0
 EVENT_RETRY_MILLISECONDS = 2_000
+MAX_EVENT_STREAMS = 8
+EVENT_STREAM_SLOTS = threading.BoundedSemaphore(MAX_EVENT_STREAMS)
+MAX_MAP_RUN_NIGHTS = 366
 
 
 def _fingerprint(value: Any) -> str:
@@ -89,16 +94,17 @@ def _parse_runs(values) -> list[dict]:
             site, start_text, nights_text = str(value).rsplit("|", 2)
             start = dt.date.fromisoformat(start_text)
             nights = int(nights_text)
-            if nights <= 0:
+            if nights <= 0 or nights > MAX_MAP_RUN_NIGHTS:
                 continue
-        except (TypeError, ValueError):
+            last_night = start + dt.timedelta(days=nights - 1)
+        except (TypeError, ValueError, OverflowError):
             continue
         runs.append(
             {
                 "site": site,
                 "start": start.isoformat(),
                 "nights": nights,
-                "last_night": (start + dt.timedelta(days=nights - 1)).isoformat(),
+                "last_night": last_night.isoformat(),
             }
         )
     return sorted(runs, key=lambda run: (run["start"], run["site"]))
@@ -379,15 +385,44 @@ def _handler():
             port = self.server.server_address[1]
             return host in {"127.0.0.1", f"127.0.0.1:{port}", "localhost", f"localhost:{port}"}
 
+        def _cross_site_request(self) -> bool:
+            """Reject browser subresource requests initiated by another site."""
+            fetch_site = self.headers.get("Sec-Fetch-Site", "").lower()
+            if fetch_site and fetch_site not in {"same-origin", "none"}:
+                return True
+            origin = self.headers.get("Origin")
+            if not origin:
+                return False
+            parsed = urllib.parse.urlsplit(origin)
+            try:
+                origin_port = parsed.port or (80 if parsed.scheme == "http" else None)
+            except ValueError:
+                return True
+            server_port = self.server.server_address[1]
+            return not (
+                parsed.scheme == "http"
+                and parsed.hostname in {"127.0.0.1", "localhost"}
+                and origin_port == server_port
+                and parsed.username is None
+                and parsed.password is None
+            )
+
         def _send_security_headers(self) -> None:
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header(
+                "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+            )
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; img-src https://tile.openstreetmap.org; "
+                "default-src 'none'; img-src https://tile.openstreetmap.org; "
                 "style-src 'unsafe-inline'; script-src 'self'; "
-                "connect-src 'self'; object-src 'none'; base-uri 'none'",
+                "connect-src 'self'; object-src 'none'; base-uri 'none'; "
+                "form-action 'none'; frame-ancestors 'none'",
             )
 
         def _send(self, status: int, content_type: str, body: bytes) -> None:
@@ -463,6 +498,9 @@ def _handler():
             if not self._allowed_host():
                 self._send(421, "text/plain; charset=utf-8", b"invalid Host header\n")
                 return
+            if self._cross_site_request():
+                self._send(403, "text/plain; charset=utf-8", b"cross-site request rejected\n")
+                return
             path = urllib.parse.urlsplit(self.path).path
             if path == "/":
                 self._send(200, "text/html; charset=utf-8", MAP_HTML.encode())
@@ -470,11 +508,23 @@ def _handler():
                 body = json.dumps(build_map_data(), separators=(",", ":")).encode()
                 self._send(200, "application/json; charset=utf-8", body)
             elif path == "/events":
-                self._stream_events()
+                if not EVENT_STREAM_SLOTS.acquire(blocking=False):
+                    self._send(503, "text/plain; charset=utf-8", b"too many event streams\n")
+                    return
+                try:
+                    self._stream_events()
+                finally:
+                    EVENT_STREAM_SLOTS.release()
             elif path == "/availability_map.js":
                 self._send(200, "application/javascript; charset=utf-8", MAP_JS.encode())
             elif path == "/card_manager.js":
                 self._send(200, "application/javascript; charset=utf-8", CARD_MANAGER_JS.encode())
+            elif path == "/availability_model.js":
+                self._send(
+                    200,
+                    "application/javascript; charset=utf-8",
+                    AVAILABILITY_MODEL_JS.encode(),
+                )
             elif path == "/favicon.ico":
                 self._send(204, "image/x-icon", b"")
             else:
