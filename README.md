@@ -1,17 +1,18 @@
 # campground-watcher
 
 A small, cron-friendly watcher that polls **recreation.gov** and **Washington
-State Parks** (the GoingToCamp booking system) for campsite openings near you and
-fires an instant notification when a site that matches your filters becomes
-available. It is designed to catch **cancellations** for otherwise sold-out
-weekends and surface a ready-to-click booking link the moment a spot frees up.
+State Parks** (the GoingToCamp booking system) for campsite openings near you.
+When a completed poll finds a new matching opening, it records it and, if you
+configure a webhook, sends a notification. It is designed to catch
+**cancellations** for otherwise sold-out weekends and surface a ready-to-click
+booking link as soon as the next poll observes a spot.
 
 It is intentionally **not** LLM-driven: it is dependency-free Python you run on
 a timer. It installs nothing and uses only the Python standard library.
 
 > **Note:** the watcher *finds and notifies* about openings. It does not book for
 > you (recreation.gov and WA State Parks both require your own login to reserve).
-> You get an instant link; you click and book.
+> You get a booking link; you click and book.
 
 ## Features
 
@@ -25,8 +26,8 @@ a timer. It installs nothing and uses only the Python standard library.
   together.
 - **Target-weekend filter** — only alert for the specific weekend(s) you care
   about, or watch everything.
-- **Per-site deep links** — each notification includes a booking URL pre-filled
-  with the dates.
+- **Booking links for every opening** — Washington links pre-fill the stay dates
+  at the facility; recreation.gov links open the campground availability page.
 - **Change-only, idempotent, de-duplicated** notifications (won't spam you when
   WA availability flaps).
 - Distance filtering, rating filter (recreation.gov), group-site exclusion.
@@ -45,7 +46,7 @@ export CAMPWATCH_HOME_LON=-122.3321   # your longitude
 
 # 2. (Optional) regenerate the candidate lists for YOUR area:
 ./build_candidates.py   # private default: local 90 km distance filtering
-./build_wa_parks.py     # WA State Parks within a ~2h drive
+./build_wa_parks.py     # WA + Tacoma Power parks within an estimated ~2h drive
 #    -> these write candidates.json / wa_parks.json, which feed watch_config.json.
 #    (Shipped JSON files are tuned for the Seattle area; rebuild for elsewhere.)
 
@@ -58,9 +59,9 @@ cp watch_targets.example.json watch_targets.json
 # Or perform a one-off 90-day scan without changing your private trip targets
 ./watch.py --all-once
 
-# 5. Read what is currently bookable
-./report.py             # everything open in the next 90 days
-./weekend.py            # sites open THIS coming Fri+Sat
+# 5. Read the availability saved by the most recent scan
+./report.py             # all qualifying openings in the last scan's window
+./weekend.py            # saved runs covering THIS coming Fri+Sat
 ./weekend.py 2030-08-09 2030-08-10   # a specific weekend
 
 # Optional live campground map (opens http://127.0.0.1:8765/)
@@ -129,6 +130,8 @@ The service is best-effort and rate-limited, so use driving mode only for an
 occasional candidate-list rebuild rather than a scheduled task.
 The generated JSON lists contain distances derived from your home location, so
 review them before committing; the checked-in lists use the public Seattle example.
+`build_wa_parks.py` estimates drive time from straight-line distance, a regional
+road-distance factor, and an average speed; it is not a routing-based cutoff.
 
 ## Configuration
 
