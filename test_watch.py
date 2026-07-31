@@ -415,6 +415,8 @@ class AvailabilityMapTests(unittest.TestCase):
         self.assertIn('function renderStayLimitNotice()', availability_map.MAP_JS)
         self.assertIn('for (let checkIn = run.first_check_in;', availability_map.MAP_JS)
         self.assertIn('function makeStayChip(location, run)', availability_map.MAP_JS)
+        self.assertIn('const cumulativeSites = new Set();', availability_map.MAP_JS)
+        self.assertIn('observedStay.sites.forEach(site => cumulativeSites.add(site));', availability_map.MAP_JS)
         self.assertIn('chip.href = bookingUrlFor(location, run);', availability_map.MAP_JS)
         self.assertIn('function bookingUrlFor(location, run = null)', availability_map.MAP_JS)
         self.assertIn('link.textContent = "Book";', availability_map.MAP_JS)

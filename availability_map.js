@@ -150,11 +150,35 @@ function availabilityDateGroups(location) {
     stays.get(end).sites.add(site);
   }
 
+  if (!location.selected_nights) {
+    // A site's longer run also covers every shorter stay starting on each of
+    // its open nights. Count that coverage cumulatively, rather than grouping
+    // only sites whose *exact* raw run has a given end date.
+    location.runs.forEach(run => {
+      for (let checkIn = run.display_start; checkIn <= run.display_end; checkIn = addIsoDays(checkIn, 1)) {
+        addObservedStay(checkIn, run.display_end, run.site);
+      }
+    });
+    return [...grouped.entries()]
+      .map(([checkIn, ends]) => {
+        const cumulativeSites = new Set();
+        const runs = [...ends.entries()]
+          .sort(([left], [right]) => right.localeCompare(left))
+          .map(([end, observedStay]) => {
+            observedStay.sites.forEach(site => cumulativeSites.add(site));
+            return {
+              display_start: checkIn,
+              display_end: end,
+              site_count: cumulativeSites.size,
+            };
+          })
+          .sort((left, right) => left.display_end.localeCompare(right.display_end));
+        return {checkIn, runs};
+      })
+      .sort((left, right) => left.checkIn.localeCompare(right.checkIn));
+  }
+
   location.runs.forEach(run => {
-    if (!location.selected_nights) {
-      addObservedStay(run.display_start, run.display_end, run.site);
-      return;
-    }
     for (let checkIn = run.first_check_in; checkIn <= run.last_check_in; checkIn = addIsoDays(checkIn, 1)) {
       addObservedStay(checkIn, addIsoDays(checkIn, location.selected_nights - 1), run.site);
     }
