@@ -290,12 +290,24 @@ MAP_HTML = r"""<!doctype html>
     #controls { position: absolute; z-index: 5; top: 12px; right: 12px; display: grid; gap: 6px; }
     #controls button { border: 1px solid #777; background: white; border-radius: 6px; min-width: 38px; min-height: 36px;
       font-size: 18px; cursor: pointer; }
-    #popup { position: absolute; z-index: 6; left: 16px; bottom: 26px; max-width: 390px; padding: 14px;
-      max-height: min(520px, calc(100% - 48px)); overflow: auto; border-radius: 10px; background: #fffffff2;
-      box-shadow: 0 5px 25px #0004; display: none; }
-    #popup h2 { margin: 0 24px 5px 0; font-size: 17px; }
-    #popup p { margin: 5px 0; font-size: 13px; }
-    #popup a { color: #075b36; font-weight: 650; }
+    #availability-card { position: absolute; z-index: 8; display: flex; flex-direction: column; width: min(430px, calc(100% - 24px));
+      height: min(520px, calc(100% - 24px)); min-width: 290px; min-height: 230px; max-width: calc(100% - 24px); max-height: calc(100% - 24px);
+      padding: 10px; overflow: hidden; resize: both; border: 1px solid #52645a; border-radius: 10px; background: #fffffff2; box-shadow: 0 5px 25px #0004; }
+    #availability-card[hidden] { display: none; }
+    #card-header { display: flex; align-items: center; justify-content: space-between; flex: none; gap: 10px; min-height: 29px; cursor: grab; user-select: none; }
+    #card-header.dragging { cursor: grabbing; }
+    #card-title { min-width: 0; overflow: hidden; color: #17211a; font-size: 17px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+    #card-actions { display: flex; flex: none; gap: 4px; }
+    .card-action { display: grid; place-items: center; width: 29px; height: 29px; padding: 0; border: 1px solid #aaa69b; border-radius: 6px;
+      background: white; color: #294536; cursor: pointer; }
+    .card-action:hover, .card-action:focus-visible { border-color: #23704a; outline: 2px solid #a9d8bd; }
+    .card-action[aria-pressed="true"] { border-color: #193c2b; background: #193c2b; color: white; }
+    .card-action svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    #card-content { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; }
+    #card-content p { margin: 5px 0; font-size: 13px; }
+    #card-content a { color: #075b36; font-weight: 650; }
+    .availability-table-block { display: flex; flex: 1; flex-direction: column; min-height: 120px; }
+    .availability-table-block .run-table-shell { flex: 1; max-height: none; }
     .run-table-shell { max-height: min(390px, 56vh); margin: 8px 0 5px; overflow: auto; overscroll-behavior: contain;
       border: 1px solid #cbc7bb; border-radius: 8px; background: #fffefa; box-shadow: inset 0 1px #fff; }
     .run-table { width: 100%; margin: 0; border-collapse: separate; border-spacing: 0; font-size: 12px; }
@@ -312,7 +324,6 @@ MAP_HTML = r"""<!doctype html>
       border-radius: 999px; background: #eaf5ed; color: #075b36; font-weight: 750; line-height: 1.15; text-decoration: none; }
     .stay-chip:hover, .stay-chip:focus-visible { border-color: #075b36; background: #cfe8d6; outline: 2px solid #a9d8bd; outline-offset: 1px; }
     .more-runs { margin: 5px 1px 8px; color: #536158; font-size: 11px; }
-    #popup-close { position: absolute; top: 6px; right: 7px; border: 0; background: none; font-size: 20px; cursor: pointer; }
     #attribution { position: absolute; z-index: 5; right: 5px; bottom: 3px; padding: 2px 5px; background: #ffffffe8;
       font-size: 11px; }
     #attribution a { color: #17472e; }
@@ -346,7 +357,12 @@ MAP_HTML = r"""<!doctype html>
       <div id="tiles"></div><div id="markers"></div>
       <div id="controls"><button id="zoom-in" title="Zoom in">+</button><button id="zoom-out" title="Zoom out">−</button>
         <button id="fit" title="Fit displayed campgrounds" style="font-size:12px">Fit</button></div>
-      <article id="popup" role="dialog" aria-modal="false" aria-label="Campground availability"><button id="popup-close" aria-label="Close">×</button><div id="popup-content"></div></article>
+      <aside id="availability-card" role="dialog" aria-modal="false" aria-label="Campground availability" hidden>
+        <div id="card-header"><strong id="card-title"></strong><div id="card-actions">
+          <button type="button" class="card-action" id="card-pin" aria-label="Pin availability card" aria-pressed="false" title="Pin availability card"></button>
+          <button type="button" class="card-action" id="card-close" aria-label="Close availability card" title="Close availability card"></button>
+        </div></div><div id="card-content"></div>
+      </aside>
       <div id="attribution"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>
         · <a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noopener">Report a map issue</a></div>
     </section>
@@ -362,12 +378,20 @@ let initialized = false;
 let filtersInitialized = false;
 let usingAllDates = true;
 let visibleLocations = [];
+let cardPinned = false;
+let cardLocationKey = null;
+let cardAnchor = null;
+let cardHideTimer = null;
+let cardDrag = null;
 
 const map = document.getElementById("map");
 const tiles = document.getElementById("tiles");
 const markers = document.getElementById("markers");
-const popup = document.getElementById("popup");
-const popupContent = document.getElementById("popup-content");
+const availabilityCard = document.getElementById("availability-card");
+const cardTitle = document.getElementById("card-title");
+const cardContent = document.getElementById("card-content");
+const cardHeader = document.getElementById("card-header");
+const cardPin = document.getElementById("card-pin");
 const dateFrom = document.getElementById("date-from");
 const dateThrough = document.getElementById("date-through");
 
@@ -513,6 +537,68 @@ function makeAvailabilityTable(location, limit, moreText) {
   return container;
 }
 
+function makeIcon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const paths = name === "pin"
+    ? ["M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5Z", "M12 13v8"]
+    : ["M6 6l12 12", "M18 6 6 18"];
+  paths.forEach(value => {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", value);
+    svg.appendChild(path);
+  });
+  return svg;
+}
+
+function updatePinAction() {
+  const label = cardPinned ? "Unpin availability card" : "Pin availability card";
+  cardPin.setAttribute("aria-label", label);
+  cardPin.setAttribute("aria-pressed", String(cardPinned));
+  cardPin.title = label;
+}
+
+function cancelCardHide() {
+  if (cardHideTimer != null) {
+    clearTimeout(cardHideTimer);
+    cardHideTimer = null;
+  }
+}
+
+function scheduleCardHide() {
+  cancelCardHide();
+  if (cardPinned) return;
+  cardHideTimer = setTimeout(() => {
+    cardHideTimer = null;
+    const anchorActive = cardAnchor && (cardAnchor.matches(":hover") || document.activeElement === cardAnchor);
+    const cardActive = availabilityCard.matches(":hover") || availabilityCard.contains(document.activeElement);
+    if (!cardPinned && !anchorActive && !cardActive) closeLocation();
+  }, 180);
+}
+
+function clampCardPosition(left, top) {
+  const maxLeft = Math.max(12, map.clientWidth - availabilityCard.offsetWidth - 12);
+  const maxTop = Math.max(12, map.clientHeight - availabilityCard.offsetHeight - 12);
+  return {left: Math.max(12, Math.min(maxLeft, left)), top: Math.max(12, Math.min(maxTop, top))};
+}
+
+function moveCard(left, top) {
+  const position = clampCardPosition(left, top);
+  availabilityCard.style.left = `${position.left}px`;
+  availabilityCard.style.top = `${position.top}px`;
+}
+
+function placeCardNear(anchor) {
+  const markerX = Number.parseFloat(anchor.style.left);
+  const markerY = Number.parseFloat(anchor.style.top);
+  const cardWidth = availabilityCard.offsetWidth;
+  const cardHeight = availabilityCard.offsetHeight;
+  let left = markerX + 20;
+  if (left + cardWidth > map.clientWidth - 12) left = markerX - cardWidth - 20;
+  moveCard(left, markerY - cardHeight / 2);
+}
+
 function availableBounds() {
   const runs = (mapData?.locations || []).flatMap(location => location.runs);
   if (!runs.length) return null;
@@ -609,12 +695,15 @@ function renderTiles() {
   }
 }
 
-function showLocation(location) {
-  popupContent.replaceChildren();
-  const title = document.createElement("h2");
-  title.id = "popup-title";
-  title.textContent = location.name;
-  popup.setAttribute("aria-labelledby", title.id);
+function showLocation(location, anchor = null, pin = false) {
+  cancelCardHide();
+  if (cardPinned && cardLocationKey !== location.key && !pin) return;
+  const shouldPlace = anchor && (availabilityCard.hidden || !cardPinned);
+  cardLocationKey = location.key;
+  cardAnchor = anchor;
+  cardTitle.textContent = location.name;
+  availabilityCard.setAttribute("aria-labelledby", "card-title");
+  cardContent.replaceChildren();
   const provider = document.createElement("p");
   provider.textContent = location.provider;
   const availability = document.createElement("p");
@@ -622,6 +711,7 @@ function showLocation(location) {
   const runHeading = document.createElement("strong");
   runHeading.textContent = "Available stays";
   const runTable = makeAvailabilityTable(location, Number.POSITIVE_INFINITY, "");
+  runTable.className = "availability-table-block";
   const distance = document.createElement("p");
   const distanceParts = [];
   if (location.distance_km != null) distanceParts.push(`${location.distance_km} km`);
@@ -640,13 +730,24 @@ function showLocation(location) {
   osm.textContent = "Open location in OpenStreetMap";
   const links = document.createElement("p");
   links.append(link, document.createTextNode(" · "), osm);
-  popupContent.append(title, provider, availability, runHeading, runTable, distance, links);
-  popup.style.display = "block";
+  cardContent.append(provider, availability, runHeading, runTable, distance, links);
+  availabilityCard.hidden = false;
+  if (pin) cardPinned = true;
+  updatePinAction();
+  if (shouldPlace) placeCardNear(anchor);
+  else if (!availabilityCard.style.left) {
+    moveCard(16, map.clientHeight - availabilityCard.offsetHeight - 26);
+  }
 }
 
 function closeLocation() {
-  popup.style.display = "none";
-  popup.removeAttribute("aria-labelledby");
+  cancelCardHide();
+  cardPinned = false;
+  cardLocationKey = null;
+  cardAnchor = null;
+  availabilityCard.hidden = true;
+  availabilityCard.removeAttribute("aria-labelledby");
+  updatePinAction();
 }
 
 function renderMarkers() {
@@ -662,7 +763,11 @@ function renderMarkers() {
     button.setAttribute("aria-haspopup", "dialog");
     button.style.left = `${point.x - origin.x}px`;
     button.style.top = `${point.y - origin.y}px`;
-    button.addEventListener("click", () => showLocation(location));
+    button.addEventListener("click", () => showLocation(location, button, true));
+    button.addEventListener("pointerenter", () => showLocation(location, button));
+    button.addEventListener("pointerleave", scheduleCardHide);
+    button.addEventListener("focus", () => showLocation(location, button));
+    button.addEventListener("blur", scheduleCardHide);
     markers.appendChild(button);
   });
 }
@@ -694,7 +799,7 @@ function focusLocation(location) {
   center = {lat: location.lat, lon: location.lon};
   zoom = Math.max(zoom, 10);
   renderMap();
-  showLocation(location);
+  showLocation(location, null, true);
 }
 
 function renderSidebar() {
@@ -729,7 +834,7 @@ function renderSidebar() {
 function renderResults() {
   if (!mapData) return;
   visibleLocations = filteredLocationList();
-  popup.style.display = "none";
+  closeLocation();
   renderSidebar();
   renderMarkers();
 }
@@ -816,16 +921,59 @@ async function refreshData() {
 document.getElementById("zoom-in").addEventListener("click", () => { zoom = Math.min(14, zoom + 1); renderMap(); });
 document.getElementById("zoom-out").addEventListener("click", () => { zoom = Math.max(4, zoom - 1); renderMap(); });
 document.getElementById("fit").addEventListener("click", fitAll);
-document.getElementById("popup-close").addEventListener("click", closeLocation);
+cardPin.appendChild(makeIcon("pin"));
+document.getElementById("card-close").appendChild(makeIcon("close"));
+cardPin.addEventListener("click", () => {
+  cardPinned = !cardPinned;
+  updatePinAction();
+  if (!cardPinned) scheduleCardHide();
+});
+document.getElementById("card-close").addEventListener("click", closeLocation);
+availabilityCard.addEventListener("pointerenter", cancelCardHide);
+availabilityCard.addEventListener("pointerleave", scheduleCardHide);
+availabilityCard.addEventListener("focusin", cancelCardHide);
+availabilityCard.addEventListener("focusout", scheduleCardHide);
+cardHeader.addEventListener("pointerdown", event => {
+  if (event.button !== 0 || event.target.closest("button")) return;
+  event.preventDefault();
+  const rect = availabilityCard.getBoundingClientRect();
+  const mapRect = map.getBoundingClientRect();
+  cardDrag = {
+    pointerId: event.pointerId,
+    offsetX: event.clientX - rect.left,
+    offsetY: event.clientY - rect.top,
+    mapLeft: mapRect.left,
+    mapTop: mapRect.top,
+  };
+  cardHeader.classList.add("dragging");
+  cardHeader.setPointerCapture(event.pointerId);
+});
+cardHeader.addEventListener("pointermove", event => {
+  if (!cardDrag || event.pointerId !== cardDrag.pointerId) return;
+  moveCard(event.clientX - cardDrag.mapLeft - cardDrag.offsetX, event.clientY - cardDrag.mapTop - cardDrag.offsetY);
+});
+cardHeader.addEventListener("pointerup", event => {
+  if (!cardDrag || event.pointerId !== cardDrag.pointerId) return;
+  cardHeader.releasePointerCapture(event.pointerId);
+  cardDrag = null;
+  cardHeader.classList.remove("dragging");
+  cardPinned = true;
+  updatePinAction();
+});
 dateFrom.addEventListener("input", () => applyDateFilter(dateFrom));
 dateThrough.addEventListener("input", () => applyDateFilter(dateThrough));
 document.querySelectorAll("#presets button").forEach(button => {
   button.addEventListener("click", () => applyPreset(button.dataset.days));
 });
 document.addEventListener("keydown", event => {
-  if (event.key === "Escape" && popup.style.display !== "none") closeLocation();
+  if (event.key === "Escape" && !availabilityCard.hidden) closeLocation();
 });
-window.addEventListener("resize", () => { if (initialized) renderMap(); });
+window.addEventListener("resize", () => {
+  if (initialized) renderMap();
+  if (!availabilityCard.hidden) {
+    moveCard(Number.parseFloat(availabilityCard.style.left), Number.parseFloat(availabilityCard.style.top));
+  }
+});
 refreshData();
 setInterval(refreshData, 5000);
 </script>

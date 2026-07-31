@@ -80,12 +80,14 @@ a fresh scan.
 
 `availability_map.py` serves an interactive, loopback-only map and refreshes its
 markers every five seconds as scan checkpoints arrive. Markers represent
-campgrounds with qualifying availability; their single detail card shows the
-number of distinct sites, available date span, distance, and direct booking
-links. Select a marker or a campground in the list to open the scrollable card;
-it remains open until you select another campground, close it with ×, or press
-Escape. The From/Through fields and 7-day, 30-day, and full-window presets filter
-both the campground list and map markers locally without another provider scan.
+campgrounds with qualifying availability; their one floating detail card shows
+the number of distinct sites, available date span, distance, and direct booking
+links. Hover or focus a marker to open the full scrollable card, then use its pin
+button to keep it open. The card can be dragged by its header and resized from
+its lower-right corner; × or Escape closes it. Selecting a marker or a campground
+in the list opens and pins the same card. The From/Through fields and 7-day,
+30-day, and full-window presets filter both the campground list and map markers
+locally without another provider scan.
 Long availability tables scroll inside the card while keeping the campground name
 and column headers visible. Results are grouped by check-in day: each compact,
 directly-bookable stay chip shows its nights and available-site count. The status
