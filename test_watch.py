@@ -418,6 +418,7 @@ class AvailabilityMapTests(unittest.TestCase):
         self.assertIn('This is not a provider-validated booking.', availability_map.MAP_JS)
         self.assertIn('function reviewUrlFor(location, run = null)', availability_map.MAP_JS)
         self.assertNotIn('function bookingUrlFor(', availability_map.MAP_JS)
+        self.assertIn('if (cardPinned && cardLocationKey !== location.key) return;', availability_map.MAP_JS)
         self.assertIn('function formatCheckInDate(value)', availability_map.MAP_JS)
         self.assertIn('checkIn.textContent = formatCheckInDate(group.checkIn)', availability_map.MAP_JS)
         self.assertIn('function formatDriveDuration(seconds)', availability_map.MAP_JS)

@@ -470,7 +470,9 @@ function renderTiles() {
 
 function showLocation(location, anchor = null, pin = false) {
   cancelCardHide();
-  if (cardPinned && cardLocationKey !== location.key && !pin) return;
+  // A pinned card stays with its campground until the user explicitly unpins
+  // or closes it. Selection and hover must not silently replace it.
+  if (cardPinned && cardLocationKey !== location.key) return;
   const shouldPlace = anchor && (availabilityCard.hidden || !cardPinned);
   cardLocationKey = location.key;
   cardAnchor = anchor;
@@ -685,6 +687,7 @@ function fitAll() {
 }
 
 function focusLocation(location) {
+  if (cardPinned && cardLocationKey !== location.key) return;
   center = {lat: location.lat, lon: location.lon};
   zoom = Math.max(zoom, 10);
   renderMap();
