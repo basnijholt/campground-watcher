@@ -88,12 +88,17 @@ Click the marker itself for a longer table. The From/Through fields and 7-day,
 30-day, and full-window presets filter both the campground list and map markers
 locally without another provider scan.
 Long availability tables scroll inside the card while keeping the campground name
-and column headers visible. The status bar reports a warning whenever scan data
-has not changed for more than one hour.
+and column headers visible. Results are grouped by check-in day: each compact,
+directly-bookable stay chip shows its nights and available-site count. The status
+bar reports a warning whenever scan data has not changed for more than one hour.
 
 For Washington State Parks, GoingToCamp supplies opaque internal resource IDs
 instead of useful campsite labels. The map hides those IDs and groups identical
 availability windows, showing the number of sites available for each date range.
+Every stay chip is a booking link. Washington links open the provider with that
+stay's dates selected; recreation.gov opens the campground's availability page.
+Recreation.gov does not offer a reliable row-specific deep link, so choose the
+shown site and dates there.
 Press Ctrl-C in the map server's terminal to stop it.
 
 The map installs no Python package and loads no third-party JavaScript. While the

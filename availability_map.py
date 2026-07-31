@@ -296,22 +296,21 @@ MAP_HTML = r"""<!doctype html>
     #popup h2 { margin: 0 24px 5px 0; font-size: 17px; }
     #popup p { margin: 5px 0; font-size: 13px; }
     #popup a { color: #075b36; font-weight: 650; }
-    .run-table-shell { max-height: min(350px, 52vh); margin: 8px 0 5px; overflow: auto; overscroll-behavior: contain;
+    .run-table-shell { max-height: min(390px, 56vh); margin: 8px 0 5px; overflow: auto; overscroll-behavior: contain;
       border: 1px solid #cbc7bb; border-radius: 8px; background: #fffefa; box-shadow: inset 0 1px #fff; }
-    .availability-table-title { position: sticky; inset-block-start: 0; z-index: 3; overflow: hidden; padding: 8px 9px; border-bottom: 1px solid #cbc7bb;
-      background: #fffefa; color: #203c2c; font-size: 12px; font-weight: 750; line-height: 17px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
     .run-table { width: 100%; margin: 0; border-collapse: separate; border-spacing: 0; font-size: 12px; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-    .run-table th, .run-table td { padding: 7px 8px; text-align: left; vertical-align: middle; border-bottom: 1px solid #e3dfd4; }
-    .run-table th { position: sticky; inset-block-start: 34px; z-index: 2; background: #e0ebe3; color: #294536; box-shadow: 0 1px #bccdc1;
+    .run-table th, .run-table td { padding: 8px 9px; text-align: left; vertical-align: top; border-bottom: 1px solid #e3dfd4; }
+    .run-table thead th { position: sticky; inset-block-start: 0; z-index: 2; background: #e0ebe3; color: #294536; box-shadow: 0 1px #bccdc1;
       font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
-    .run-table th:last-child, .run-table td:last-child { width: 1%; text-align: center; white-space: nowrap; }
+    .run-table tbody th { width: 1%; color: #203c2c; font-weight: 750; white-space: nowrap; }
     .run-table tbody tr:nth-child(even) { background: #f7f5ef; }
     .run-table tbody tr:hover { background: #eaf4ed; }
-    .run-table tbody tr:last-child td { border-bottom: 0; }
-    .book-link { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 4px 9px; border: 1px solid #28714c;
-      border-radius: 6px; background: #eaf5ed; color: #075b36; font-weight: 750; line-height: 1; text-decoration: none; }
-    .book-link:hover, .book-link:focus-visible { border-color: #075b36; background: #cfe8d6; outline: 2px solid #a9d8bd; outline-offset: 1px; }
+    .run-table tbody tr:last-child td, .run-table tbody tr:last-child th { border-bottom: 0; }
+    .stay-options { display: flex; flex-wrap: wrap; gap: 6px; }
+    .stay-chip { display: inline-flex; align-items: center; min-height: 28px; padding: 3px 8px; border: 1px solid #28714c;
+      border-radius: 999px; background: #eaf5ed; color: #075b36; font-weight: 750; line-height: 1.15; text-decoration: none; }
+    .stay-chip:hover, .stay-chip:focus-visible { border-color: #075b36; background: #cfe8d6; outline: 2px solid #a9d8bd; outline-offset: 1px; }
     .more-runs { margin: 5px 1px 8px; color: #536158; font-size: 11px; }
     #hover-card { position: absolute; z-index: 8; width: min(430px, calc(100% - 24px)); padding: 9px 10px;
       border: 1px solid #52645a; border-radius: 8px; background: #fffffff7; box-shadow: 0 4px 16px #0005;
@@ -433,6 +432,28 @@ function availabilityRows(location) {
       || left.display_end.localeCompare(right.display_end));
 }
 
+function availabilityDateGroups(location) {
+  const grouped = new Map();
+  availabilityRows(location).forEach(run => {
+    if (!grouped.has(run.display_start)) grouped.set(run.display_start, new Map());
+    const stays = grouped.get(run.display_start);
+    if (!stays.has(run.display_end)) {
+      stays.set(run.display_end, {
+        display_start: run.display_start,
+        display_end: run.display_end,
+        site_count: 0,
+      });
+    }
+    stays.get(run.display_end).site_count += run.site_count;
+  });
+  return [...grouped.entries()]
+    .map(([checkIn, runs]) => ({
+      checkIn,
+      runs: [...runs.values()].sort((left, right) => left.display_end.localeCompare(right.display_end)),
+    }))
+    .sort((left, right) => left.checkIn.localeCompare(right.checkIn));
+}
+
 function bookingUrlFor(location, run) {
   if (!run || !location.key.startsWith("wa:")) return location.booking_url;
   try {
@@ -447,33 +468,32 @@ function bookingUrlFor(location, run) {
   }
 }
 
-function makeBookingLink(location, run) {
+function makeStayChip(location, run) {
+  const nights = dayCount(run.display_start, run.display_end);
+  const text = `${nights} night${nights === 1 ? "" : "s"} · ${run.site_count} site${run.site_count === 1 ? "" : "s"}`;
   const link = document.createElement("a");
-  link.className = "book-link";
+  link.className = "stay-chip";
   link.href = bookingUrlFor(location, run);
   link.target = "_blank";
   link.rel = "noopener";
-  link.textContent = "Book";
-  link.setAttribute("aria-label", `Book ${location.name}, ${formatDateRange(run)}`);
+  link.textContent = text;
+  link.setAttribute("aria-label", `${text} — book ${location.name}, checking in ${formatDate(run.display_start)}`);
   return link;
 }
 
 function makeAvailabilityTable(location, limit, moreText) {
-  const rows = availabilityRows(location);
-  const aggregateSites = location.key.startsWith("wa:");
+  const groups = availabilityDateGroups(location);
   const container = document.createElement("div");
   const table = document.createElement("table");
   table.className = "run-table";
-  table.setAttribute("aria-label", aggregateSites ? "Available date windows" : "Available site dates");
+  table.setAttribute("aria-label", "Available stays by check-in date");
   const caption = document.createElement("caption");
   caption.className = "sr-only";
   caption.textContent = `${location.name} availability`;
   table.appendChild(caption);
   const head = document.createElement("thead");
   const headRow = document.createElement("tr");
-  const headings = aggregateSites
-    ? ["Available dates", "Nights", "Sites", "Book"]
-    : ["Site", "Available dates", "Nights", "Book"];
+  const headings = ["Check in", "Available stays"];
   headings.forEach(label => {
     const cell = document.createElement("th");
     cell.scope = "col";
@@ -482,25 +502,17 @@ function makeAvailabilityTable(location, limit, moreText) {
   });
   head.appendChild(headRow);
   const body = document.createElement("tbody");
-  rows.slice(0, limit).forEach(run => {
+  groups.slice(0, limit).forEach(group => {
     const row = document.createElement("tr");
-    const dates = document.createElement("td");
-    const nights = document.createElement("td");
-    dates.textContent = formatDateRange(run);
-    nights.textContent = String(dayCount(run.display_start, run.display_end));
-    if (aggregateSites) {
-      const sites = document.createElement("td");
-      const book = document.createElement("td");
-      sites.textContent = String(run.site_count);
-      book.appendChild(makeBookingLink(location, run));
-      row.append(dates, nights, sites, book);
-    } else {
-      const site = document.createElement("td");
-      const book = document.createElement("td");
-      site.textContent = run.site;
-      book.appendChild(makeBookingLink(location, run));
-      row.append(site, dates, nights, book);
-    }
+    const checkIn = document.createElement("th");
+    checkIn.scope = "row";
+    checkIn.textContent = formatDate(group.checkIn);
+    const stays = document.createElement("td");
+    const options = document.createElement("div");
+    options.className = "stay-options";
+    group.runs.forEach(run => options.appendChild(makeStayChip(location, run)));
+    stays.appendChild(options);
+    row.append(checkIn, stays);
     body.appendChild(row);
   });
   table.append(head, body);
@@ -508,16 +520,12 @@ function makeAvailabilityTable(location, limit, moreText) {
   shell.className = "run-table-shell";
   shell.tabIndex = 0;
   shell.setAttribute("aria-label", `${location.name} availability table; scroll for more dates`);
-  const tableTitle = document.createElement("div");
-  tableTitle.className = "availability-table-title";
-  tableTitle.textContent = `${location.name} availability`;
-  shell.append(tableTitle, table);
+  shell.appendChild(table);
   container.appendChild(shell);
-  if (rows.length > limit) {
+  if (groups.length > limit) {
     const more = document.createElement("p");
     more.className = "more-runs";
-    const label = aggregateSites ? "date window(s)" : "run(s)";
-    more.textContent = `+${rows.length - limit} more ${label}${moreText}`;
+    more.textContent = `+${groups.length - limit} more check-in day(s)${moreText}`;
     container.appendChild(more);
   }
   return container;
@@ -651,12 +659,9 @@ function showLocation(location) {
   const provider = document.createElement("p");
   provider.textContent = location.provider;
   const availability = document.createElement("p");
-  const rowCount = availabilityRows(location).length;
-  availability.textContent = location.key.startsWith("wa:")
-    ? `${location.available_sites} site(s) across ${rowCount} date window(s), ${location.earliest} through ${location.latest_night}`
-    : `${location.available_sites} site(s), ${location.available_runs} run(s), ${location.earliest} through ${location.latest_night}`;
+  availability.textContent = `${location.available_sites} site${location.available_sites === 1 ? "" : "s"} · ${formatDate(location.earliest)} – ${formatDate(location.latest_night)}`;
   const runHeading = document.createElement("strong");
-  runHeading.textContent = "Available dates";
+  runHeading.textContent = "Available stays";
   const runTable = makeAvailabilityTable(location, Number.POSITIVE_INFINITY, "");
   const distance = document.createElement("p");
   const distanceParts = [];
