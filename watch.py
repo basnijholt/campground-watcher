@@ -19,16 +19,16 @@ import argparse
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import datetime as dt
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
 import socket
+import ssl
 import sys
 import threading
 import traceback
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 from campwatch_config import load_provider_rules
@@ -270,6 +270,7 @@ COMPLETE_STATE_FILE = HERE / "last_complete_state.json"
 SCAN_PROGRESS = HERE / "scan_progress.json"
 ALERTS = HERE / "alerts.jsonl"
 SENT_PINGS = HERE / "sent_pings.json"  # ledger of trigger event-ids already sent
+WEBHOOK_OUTBOX = HERE / "webhook_outbox.json"  # durable failed webhook payloads
 TARGETS_FILE = HERE / "watch_targets.json"  # private, gitignored trip dates
 SCHEDULE_STATE = HERE / "schedule_state.json"
 # Suppress re-sending the same opening (same event-id) within this many hours.
@@ -332,7 +333,29 @@ def availability_worker_counts() -> tuple[int, int]:
 
 # Optional: send the human-readable text under this JSON key (Discord uses
 # "content", Slack uses "text", ntfy uses "message"). Default "content".
-WEBHOOK_TEXT_KEY = os.environ.get("CAMPWATCH_WEBHOOK_TEXT_KEY", "content")
+_configured_webhook_text_key = os.environ.get("CAMPWATCH_WEBHOOK_TEXT_KEY", "content")
+_reserved_webhook_keys = {
+    "campground",
+    "event_id",
+    "new_run_count",
+    "new_runs",
+    "new_runs_truncated",
+    "sites",
+    "sites_truncated",
+    "stay_groups",
+    "url",
+}
+WEBHOOK_TEXT_KEY = (
+    _configured_webhook_text_key
+    if 1 <= len(_configured_webhook_text_key) <= 64
+    and _configured_webhook_text_key not in _reserved_webhook_keys
+    else "content"
+)
+MAX_WEBHOOK_TEXT_CHARS = 1_800
+MAX_WEBHOOK_DETAIL_GROUPS = 10
+MAX_WEBHOOK_SAMPLED_RUNS = 10
+MAX_WEBHOOK_BODY_BYTES = 64 * 1024
+MAX_WEBHOOK_OUTBOX_ITEMS = 100
 
 GROUP_MARKERS = load_provider_rules()["watch"]["group_markers"]
 
@@ -584,7 +607,8 @@ def _load_sent_pings() -> dict:
     """Load the ledger of {event_id: iso_timestamp} of pings already sent."""
     if SENT_PINGS.exists():
         try:
-            return json.loads(SENT_PINGS.read_text())
+            values = json.loads(SENT_PINGS.read_text())
+            return values if isinstance(values, dict) else {}
         except Exception:  # noqa: BLE001
             return {}
     return {}
@@ -596,11 +620,16 @@ def _record_sent_ping(ledger: dict, event_id: str):
     now = dt.datetime.now()
     ledger[event_id] = now.isoformat(timespec="seconds")
     cutoff = now - dt.timedelta(hours=PING_SUPPRESS_HOURS)
-    pruned = {
-        k: v
-        for k, v in ledger.items()
-        if dt.datetime.fromisoformat(v) >= cutoff
-    }
+    pruned = {}
+    for key, value in ledger.items():
+        try:
+            when = dt.datetime.fromisoformat(value)
+            if when.tzinfo is not None:
+                when = when.astimezone().replace(tzinfo=None)
+        except (TypeError, ValueError):
+            continue
+        if when >= cutoff:
+            pruned[str(key)] = value
     try:
         atomic_write_json(SENT_PINGS, pruned)
     except Exception:  # noqa: BLE001
@@ -616,51 +645,354 @@ def _recently_sent(ledger: dict, event_id: str) -> bool:
         when = dt.datetime.fromisoformat(ts)
     except Exception:  # noqa: BLE001
         return False
-    return (dt.datetime.now() - when) < dt.timedelta(hours=PING_SUPPRESS_HOURS)
+    now = dt.datetime.now(when.tzinfo) if when.tzinfo is not None else dt.datetime.now()
+    age = now - when
+    return dt.timedelta() <= age < dt.timedelta(hours=PING_SUPPRESS_HOURS)
 
 
-class _NoRedirects(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise urllib.error.HTTPError(req.full_url, code, "redirects disabled", headers, fp)
+def _validated_webhook_destination(
+    url: str,
+) -> tuple[urllib.parse.SplitResult, tuple[str, ...]]:
+    """Return a validated URL and the public addresses it resolved to.
+
+    The caller must connect to one of the returned addresses instead of resolving
+    the hostname again.  Keeping validation and connection bound to the same DNS
+    answer prevents a public-to-private DNS rebinding between those two steps.
+    """
+    if len(url) > 8_192:
+        raise ValueError("webhook URL is too long")
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("webhook must use an absolute HTTPS URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("webhook URL must not contain user-info credentials")
+    if parsed.fragment:
+        raise ValueError("webhook URL must not contain a fragment")
+    try:
+        port = parsed.port or 443
+    except ValueError as exc:
+        raise ValueError("webhook URL has an invalid port") from exc
+    allow_private = os.environ.get("CAMPWATCH_ALLOW_PRIVATE_WEBHOOK", "0") == "1"
+    try:
+        answers = socket.getaddrinfo(parsed.hostname, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError("webhook hostname could not be resolved") from exc
+    addresses = tuple(dict.fromkeys(item[4][0] for item in answers))
+    if not addresses:
+        raise ValueError("webhook hostname did not resolve to an address")
+    if not allow_private and any(
+        not ipaddress.ip_address(address).is_global for address in addresses
+    ):
+        raise ValueError("webhook resolves to a non-public address")
+    return parsed, addresses
 
 
 def validate_webhook_url(url: str) -> str:
     """Require HTTPS and reject local/private destinations to prevent SSRF."""
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme != "https" or not parsed.hostname:
-        raise ValueError("webhook must use an absolute HTTPS URL")
-    if parsed.username or parsed.password:
-        raise ValueError("webhook URL must not contain user-info credentials")
-    allow_private = os.environ.get("CAMPWATCH_ALLOW_PRIVATE_WEBHOOK", "0") == "1"
-    if not allow_private:
-        try:
-            addresses = socket.getaddrinfo(
-                parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM
-            )
-        except socket.gaierror as exc:
-            raise ValueError("webhook hostname could not be resolved") from exc
-        for address in {item[4][0] for item in addresses}:
-            if not ipaddress.ip_address(address).is_global:
-                raise ValueError("webhook resolves to a non-public address")
+    _validated_webhook_destination(url)
     return url
 
 
-def _post_webhook(url: str, payload: dict) -> int:
-    validated = validate_webhook_url(url)
-    body = json.dumps(payload).encode()
-    req = urllib.request.Request(
-        validated,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Content-Length": str(len(body)),
-        },
-        method="POST",
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection pinned to a validated address with the original TLS name."""
+
+    def __init__(self, hostname: str, port: int, address: str, *, timeout: float):
+        context = ssl.create_default_context()
+        context.set_alpn_protocols(["http/1.1"])
+        super().__init__(
+            hostname,
+            port=port,
+            timeout=timeout,
+            context=context,
+        )
+        self._validated_address = address
+
+    def connect(self) -> None:
+        self.sock = self._create_connection(
+            (self._validated_address, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=self.host)
+
+
+def _is_discord_hostname(hostname: str | None) -> bool:
+    hostname = (hostname or "").lower()
+    return hostname in {"discord.com", "discordapp.com"} or hostname.endswith(
+        (".discord.com", ".discordapp.com")
     )
-    opener = urllib.request.build_opener(_NoRedirects())
-    with opener.open(req, timeout=30) as response:
-        response.read(1)
-        return getattr(response, "status", 200)
+
+
+def _webhook_request_target(parsed: urllib.parse.SplitResult) -> str:
+    query = parsed.query
+    if _is_discord_hostname(parsed.hostname):
+        parameters = urllib.parse.parse_qsl(query, keep_blank_values=True)
+        if not any(key == "wait" for key, _value in parameters):
+            parameters.append(("wait", "true"))
+        query = urllib.parse.urlencode(parameters)
+    return urllib.parse.urlunsplit(("", "", parsed.path or "/", query, ""))
+
+
+def _post_webhook(url: str, payload: dict) -> int:
+    parsed, addresses = _validated_webhook_destination(url)
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    if len(body) > MAX_WEBHOOK_BODY_BYTES:
+        raise ValueError("webhook payload exceeded the local size limit")
+    headers = {
+        "Content-Type": "application/json",
+        "Content-Length": str(len(body)),
+        "User-Agent": "campground-watcher/1.0",
+    }
+    target = _webhook_request_target(parsed)
+    port = parsed.port or 443
+    last_error: Exception | None = None
+    for address in addresses:
+        connection = _PinnedHTTPSConnection(
+            parsed.hostname, port, address, timeout=30
+        )
+        try:
+            connection.request("POST", target, body=body, headers=headers)
+            response = connection.getresponse()
+            response.read(1)
+            return response.status
+        except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+            last_error = exc
+        finally:
+            connection.close()
+    assert last_error is not None
+    raise last_error
+
+
+def _load_webhook_outbox() -> list[dict]:
+    if not WEBHOOK_OUTBOX.exists():
+        return []
+    try:
+        values = json.loads(WEBHOOK_OUTBOX.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("webhook outbox could not be read") from exc
+    if not isinstance(values, list) or any(
+        not isinstance(item, dict) for item in values
+    ):
+        raise RuntimeError("webhook outbox has an invalid format")
+    return values
+
+
+def _save_webhook_outbox(items: list[dict]) -> None:
+    atomic_write_json(WEBHOOK_OUTBOX, items)
+
+
+def _queue_webhook_payload(event_id: str, payload: dict) -> None:
+    encoded = json.dumps(payload, separators=(",", ":")).encode()
+    if len(encoded) > MAX_WEBHOOK_BODY_BYTES:
+        raise RuntimeError("webhook payload is too large to queue")
+    items = _load_webhook_outbox()
+    if any(item.get("event_id") == event_id for item in items):
+        return
+    if len(items) >= MAX_WEBHOOK_OUTBOX_ITEMS:
+        raise RuntimeError("webhook outbox is full")
+    items.append(
+        {
+            "event_id": event_id,
+            "payload": payload,
+            "attempts": 0,
+            "next_attempt_at": dt.datetime.now().isoformat(timespec="seconds"),
+        }
+    )
+    _save_webhook_outbox(items)
+
+
+def _event_is_queued(event_id: str) -> bool:
+    return any(
+        item.get("event_id") == event_id for item in _load_webhook_outbox()
+    )
+
+
+def flush_webhook_outbox(now: dt.datetime | None = None) -> int:
+    """Retry due webhook payloads and retain failures with bounded backoff."""
+    if not NOTIFY_ENABLED or not WEBHOOK_URL:
+        return 0
+    now = now or dt.datetime.now()
+    ledger = _load_sent_pings()
+    remaining = []
+    sent = 0
+    for item in _load_webhook_outbox():
+        event_id = item.get("event_id")
+        payload = item.get("payload")
+        if not isinstance(event_id, str) or not isinstance(payload, dict):
+            continue
+        if _recently_sent(ledger, event_id):
+            continue
+        try:
+            due = dt.datetime.fromisoformat(str(item.get("next_attempt_at")))
+            if due.tzinfo is not None:
+                due = due.astimezone().replace(tzinfo=None)
+        except (TypeError, ValueError):
+            due = now
+        try:
+            is_due = due <= now
+        except TypeError:
+            is_due = True
+        if not is_due:
+            remaining.append(item)
+            continue
+        try:
+            status = _post_webhook(WEBHOOK_URL, payload)
+            if status >= 300:
+                raise HttpRequestError(f"HTTP {status}", status=status)
+        except Exception:  # noqa: BLE001
+            try:
+                previous_attempts = max(0, int(item.get("attempts", 0)))
+            except (TypeError, ValueError):
+                previous_attempts = 0
+            attempts = min(10, previous_attempts + 1)
+            delay_minutes = min(60, 2**attempts)
+            remaining.append(
+                {
+                    **item,
+                    "attempts": attempts,
+                    "next_attempt_at": (
+                        now + dt.timedelta(minutes=delay_minutes)
+                    ).isoformat(timespec="seconds"),
+                }
+            )
+            continue
+        _record_sent_ping(ledger, event_id)
+        sent += 1
+    _save_webhook_outbox(remaining)
+    if sent:
+        log(f"  -> delivered {sent} queued notification(s)")
+    return sent
+
+
+def _bounded_webhook_payload(
+    name: str,
+    url: str,
+    event_id: str,
+    new_runs: list[str],
+    runs: list[dict],
+) -> dict:
+    """Summarize a potentially huge opening set into one bounded notification."""
+    def bounded(value, limit):
+        return str(value)[:limit]
+
+    by_key = {run["state_key"]: run for run in runs}
+    groups: dict[tuple, dict] = {}
+    sampled_run_keys = []
+    for run_key in new_runs:
+        run = by_key.get(run_key)
+        if not run:
+            continue
+        link = bounded(run.get("booking_url") or url, 2_048)
+        weekend = bounded(run["weekend"], 120) if run.get("weekend") else None
+        key = (
+            bounded(run["start"], 10),
+            run["nights"],
+            weekend,
+            link,
+            run.get("observed_nights"),
+            run.get("max_stay_nights"),
+        )
+        group = groups.setdefault(key, {"sites": set()})
+        group["sites"].add(bounded(run["site"], 120))
+        if len(sampled_run_keys) < MAX_WEBHOOK_SAMPLED_RUNS:
+            sampled_run_keys.append(run_key)
+
+    details = []
+    structured = []
+    for key, group in sorted(groups.items(), key=lambda item: (item[0][0], item[0][1])):
+        start, nights, weekend, link, observed_nights, max_stay_nights = key
+        site_count = len(group["sites"])
+        weekend_text = f" [{weekend}]" if weekend and weekend != "all" else ""
+        limit_text = (
+            f"; observed {observed_nights}, capped at {max_stay_nights}"
+            if observed_nights
+            else ""
+        )
+        details.append(
+            f"• {site_count} site{'s' if site_count != 1 else ''}: "
+            f"{nights} night{'s' if nights != 1 else ''} from {start}"
+            f"{weekend_text}{limit_text}\n  {link}"
+        )
+        structured.append(
+            {
+                "start": start,
+                "nights": nights,
+                "weekend": weekend,
+                "booking_url": link,
+                "site_count": site_count,
+                "sample_sites": sorted(group["sites"])[:3],
+                "observed_nights": observed_nights,
+                "max_stay_nights": max_stay_nights,
+            }
+        )
+
+    header = f"\U0001f3d5\ufe0f NEW availability at {bounded(name, 120)}"
+    included_lines = []
+    included_groups = []
+    for line, group in zip(details[:MAX_WEBHOOK_DETAIL_GROUPS], structured):
+        candidate_lines = [*included_lines, line]
+        omitted = max(0, len(details) - len(candidate_lines))
+        footer = (
+            f"\n… {omitted} more stay option{'s' if omitted != 1 else ''}; "
+            f"{len(new_runs)} new run{'s' if len(new_runs) != 1 else ''} saved locally."
+            if omitted
+            else ""
+        )
+        candidate = header + "\n" + "\n".join(candidate_lines) + footer
+        if len(candidate) > MAX_WEBHOOK_TEXT_CHARS:
+            break
+        included_lines = candidate_lines
+        included_groups.append(group)
+    omitted = max(0, len(details) - len(included_lines))
+    footer = (
+        f"\n… {omitted} more stay option{'s' if omitted != 1 else ''}; "
+        f"{len(new_runs)} new run{'s' if len(new_runs) != 1 else ''} saved locally."
+        if omitted
+        else ""
+    )
+    message = header
+    if included_lines:
+        message += "\n" + "\n".join(included_lines)
+    elif new_runs:
+        message += f"\n{len(new_runs)} new runs saved locally."
+    message = (message + footer)[:MAX_WEBHOOK_TEXT_CHARS]
+    sampled_sites = []
+    for run_key in sampled_run_keys:
+        run = by_key[run_key]
+        sampled_site = {
+            "site": bounded(run["site"], 120),
+            "start": bounded(run["start"], 10),
+            "nights": run["nights"],
+            "weekend": (
+                bounded(run["weekend"], 120) if run.get("weekend") else None
+            ),
+            "booking_url": bounded(run.get("booking_url") or url, 2_048),
+        }
+        if run.get("observed_nights"):
+            sampled_site["observed_nights"] = run["observed_nights"]
+            sampled_site["max_stay_nights"] = run.get("max_stay_nights")
+        sampled_sites.append(sampled_site)
+    payload = {
+        WEBHOOK_TEXT_KEY: message,
+        "campground": bounded(name, 120),
+        "url": bounded(url, 2_048),
+        # Keep the original per-site field for webhook consumers. It is now a
+        # bounded sample; aggregate groups and counts describe the full event.
+        "sites": sampled_sites,
+        "sites_truncated": len(new_runs) > len(sampled_sites),
+        "stay_groups": included_groups,
+        "new_run_count": len(new_runs),
+        "new_runs": [bounded(run_key, 256) for run_key in sampled_run_keys],
+        "new_runs_truncated": len(new_runs) > len(sampled_run_keys),
+        "event_id": bounded(event_id, 128),
+    }
+    parsed = urllib.parse.urlsplit(WEBHOOK_URL)
+    if (
+        WEBHOOK_TEXT_KEY == "content"
+        and _is_discord_hostname(parsed.hostname)
+    ):
+        payload["allowed_mentions"] = {"parse": []}
+    return payload
 
 
 def send_trigger(name: str, url: str, new_runs: list[str], runs: list[dict]) -> bool:
@@ -671,10 +1003,11 @@ def send_trigger(name: str, url: str, new_runs: list[str], runs: list[dict]) -> 
     same batch of openings will not double-notify even across runs. Suppresses
     re-notifying flapping openings within a 24h window. Fails soft: on any error
     it logs a WARN and returns False, leaving the opening recorded in
-    alerts.jsonl. Never raises.
+    alerts.jsonl. A failed request is durably queued; False means neither the
+    request nor its durable queue entry could be persisted. Never raises.
     """
     if not NOTIFY_ENABLED or not WEBHOOK_URL:
-        return False
+        return True
 
     # Stable idempotency id from the exact set of new runs.
     digest = hashlib.sha256(
@@ -687,62 +1020,40 @@ def send_trigger(name: str, url: str, new_runs: list[str], runs: list[dict]) -> 
     ledger = _load_sent_pings()
     if _recently_sent(ledger, event_id):
         log(f"  (suppressed re-notify for {name}, event-id {event_id} sent recently)")
+        return True
+    try:
+        if _event_is_queued(event_id):
+            log(f"  (notification already queued for {name}, event-id {event_id})")
+            return True
+    except Exception as exc:  # noqa: BLE001
+        # Continue with an immediate send, but do not overwrite an unreadable
+        # outbox if that send fails.
+        log(f"  WARN webhook outbox unavailable: {type(exc).__name__}")
+
+    try:
+        payload = _bounded_webhook_payload(name, url, event_id, new_runs, runs)
+    except Exception as exc:  # noqa: BLE001
+        log(f"  WARN webhook payload could not be built for {name}: {type(exc).__name__}")
         return False
-
-    # Build a human message: one line per open SITE, each with its own deep
-    # link (pre-filled with the stay dates) so you can jump straight to booking.
-    # ``new_runs`` identifies raw watcher state.  A provider policy can cap the
-    # displayed/linked duration, so it must not be reconstructed from the
-    # user-facing duration.
-    by_key = {r["state_key"]: r for r in runs}
-    lines = []
-    sites_data = []
-    for k in new_runs:
-        r = by_key.get(k)
-        if not r:
-            continue
-        wk = f" [{r['weekend']}]" if r.get("weekend") and r["weekend"] != "all" else ""
-        link = r.get("booking_url") or url
-        limit_note = ""
-        if r.get("observed_nights"):
-            limit_note = (
-                f" (observed {r['observed_nights']} consecutive open nights; "
-                f"capped at the known {r['max_stay_nights']}-night provider limit)"
-            )
-        lines.append(
-            f"\u2022 Site {r['site']}: {r['nights']} nights from {r['start']}{wk}{limit_note}\n  {link}"
-        )
-        site_data = {
-            "site": r["site"],
-            "start": r["start"],
-            "nights": r["nights"],
-            "weekend": r.get("weekend"),
-            "booking_url": link,
-        }
-        if r.get("observed_nights"):
-            site_data["observed_nights"] = r["observed_nights"]
-            site_data["max_stay_nights"] = r["max_stay_nights"]
-        sites_data.append(site_data)
-    detail = "\n".join(lines) if lines else "; ".join(new_runs)
-    message = f"\U0001f3d5\ufe0f NEW availability at {name}\n{detail}"
-
-    payload = {
-        WEBHOOK_TEXT_KEY: message,
-        "campground": name,
-        "url": url,
-        "sites": sites_data,
-        "new_runs": new_runs,
-        "event_id": event_id,
-    }
     try:
         status = _post_webhook(WEBHOOK_URL, payload)
         if status >= 300:
-            log(f"  WARN webhook rc={status} for {name}")
-            return False
+            raise HttpRequestError(f"HTTP {status}", status=status)
     except Exception as exc:  # noqa: BLE001
         # Never log the URL: webhook paths often contain bearer-like secrets.
-        log(f"  WARN webhook send failed for {name}: {type(exc).__name__}")
-        return False
+        try:
+            _queue_webhook_payload(event_id, payload)
+        except Exception as queue_exc:  # noqa: BLE001
+            log(
+                f"  WARN webhook send and durable queue failed for {name}: "
+                f"{type(exc).__name__}/{type(queue_exc).__name__}"
+            )
+            return False
+        log(
+            f"  WARN webhook send failed for {name}: {type(exc).__name__}; "
+            "queued for retry"
+        )
+        return True
     _record_sent_ping(ledger, event_id)
     log(f"  -> notification sent for {name} (event-id {event_id})")
     return True
@@ -983,6 +1294,10 @@ def _summary_from_state(cfg: dict, state: dict, previous: dict):
 
 
 def main(*, scheduled: bool = False):
+    try:
+        flush_webhook_outbox()
+    except Exception as exc:  # noqa: BLE001
+        log(f"WARN queued notifications could not be retried: {type(exc).__name__}")
     if scheduled and not scheduled_poll_due():
         return 0
     interval = recommended_poll_minutes()
@@ -1183,16 +1498,26 @@ def main(*, scheduled: bool = False):
 
     _write_state_checkpoint(prev_state, new_state, complete=True)
     summary, new_alerts = _summary_from_state(cfg, new_state, prev_state)
+    notifications_durable = True
     if new_alerts:
         secure_append_jsonl(ALERTS, new_alerts)
         log(f"!! {len(new_alerts)} campground(s) with NEW availability -> alerts.jsonl")
         # Instant webhook per campground with new openings. Change-only:
         # this branch runs ONLY when there is genuinely new availability.
         for a in new_alerts:
-            send_trigger(a["name"], a["url"], a["new_runs"], a["runs"])
+            notifications_durable = (
+                send_trigger(a["name"], a["url"], a["new_runs"], a["runs"])
+                and notifications_durable
+            )
     else:
         log("No new availability since last check.")
-    atomic_write_json(COMPLETE_STATE_FILE, new_state)
+    if notifications_durable:
+        atomic_write_json(COMPLETE_STATE_FILE, new_state)
+    else:
+        log(
+            "WARN notification state could not be persisted; retaining the prior "
+            "complete baseline so the alert is retried."
+        )
     _write_scan_progress(
         status="complete",
         started_at=started_at,

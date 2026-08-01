@@ -12,8 +12,8 @@ a timer. It installs nothing and uses only the Python standard library.
 
 > **Note:** the watcher *finds and notifies* about openings. It does not book for
 > you (recreation.gov and WA State Parks both require your own login to reserve).
-> Provider links are a convenience for reviewing availability; they are not a
-> confirmation that a particular site can be reserved.
+> Provider links start a booking with the displayed observed dates; they are not
+> a confirmation that a particular site can be reserved.
 
 ## Features
 
@@ -27,7 +27,7 @@ a timer. It installs nothing and uses only the Python standard library.
   together.
 - **Target-weekend filter** — only alert for the specific weekend(s) you care
   about, or watch everything.
-- **Provider review links** — Washington can pre-fill selected stay dates at the
+- **Provider booking links** — Washington can pre-fill selected stay dates at the
   facility; recreation.gov opens the campground availability page. Neither is a
   booking confirmation.
 - **Change-only, idempotent, de-duplicated** notifications (won't spam you when
@@ -91,28 +91,48 @@ is open, it holds one same-origin event stream to the local map server. The
 server watches the atomic scan checkpoint files: a checkpoint-only change updates
 the status line, while a changed availability fingerprint causes one full map-data
 fetch and marker/list update. It does not repeatedly fetch unchanged availability
-data. Markers represent campgrounds with qualifying availability; their one
-floating detail card shows the number of distinct sites, observed date span,
-distance, and provider-review links. Hover or focus a marker to open the full
-scrollable card, then use its pin button to keep it open. The card can be dragged
-by its header and resized from its lower-right corner; × or Escape closes it.
-Selecting a marker or a campground in the list opens and pins the same card. The
+data. Markers represent campgrounds with qualifying availability; clicking one
+opens an unpinned floating detail card with the number of distinct sites,
+observed date span, distance, and provider-review links. An unpinned card closes
+when you click elsewhere or open another card. Use its pin button to keep it
+open; up to five cards may be pinned, and pinning a sixth automatically unpins
+the oldest pinned card. Reopening an existing card keeps its position and pin
+state, then brings it to the foreground. Cards can be dragged by their headers
+and resized from their lower-right corners; × always closes a card. The keyboard-
+focused card has a blue inset highlight; Escape closes it, arrow keys select the
+nearest open card, and Page Up/Page Down scroll its availability. Press `?` for
+a Gmail-style shortcut overlay. Selecting a marker or a campground in the list
+opens the relevant card without changing its pin state. The
 check-in-date fields update the campground list, map markers, and any open card
 immediately, locally, without another provider scan. Leave stay length blank to
 browse every recorded option; set it (for example, to two nights) to count only
-sites whose runs cover that stay at each selected check-in date. Each scan now
-records its inclusive checked-night window separately from positive availability.
+sites whose runs cover that stay at each selected check-in date. Stay length is
+limited to a whole number from 1 through 90; invalid values show an inline error
+and hide results instead of attempting unsafe date arithmetic. The full-window
+preset automatically moves the final check-in earlier when a multi-night stay is
+selected, so every displayed check-in remains fully covered by the scan. Each
+scan records its inclusive checked-night window separately from positive
+availability.
 The map displays that window and warns when a selection is wholly or partly
 outside it: un-checked dates are always shown as unknown, never unavailable.
-The 7-day, 30-day, and full-window presets set the same check-in range.
+The 7-day, 30-day, and full-window presets set the same check-in range. Search,
+provider and latest-scan filters narrow the saved results, and the list can be
+sorted by earliest opening, travel proximity, name, or available-site count.
 Drag an empty part of the map to pan. Hover the map and use the mouse wheel or
 double-click to zoom; the +/− controls work too. When the map has keyboard focus,
-the arrow keys pan, +/− zoom, and Home fits the currently displayed campgrounds.
+the arrow keys pan, +/− (including Command +/−) zoom, and Home fits the currently
+displayed campgrounds. Those map shortcuts are also available from a focused card
+when they are not being used for a card shortcut.
 Long availability tables scroll inside the card while keeping the campground name
-and column headers visible. Results are grouped by check-in day: each compact,
-observed-stay chip shows its nights and observed-site count. The card offers a
-separate provider-review link, rather than presenting the chip as a booking
-link. The status
+and column headers visible. Results are grouped by check-in day and initially show
+14 check-in days and at most three stay options per day; explicit “show more”
+controls reveal additional results without creating hundreds of links at once.
+Each observed-stay chip is a booking link and shows its nights and observed-site
+count. Nearby map markers cluster until zoomed in, reducing overlap without
+hiding their campgrounds from the list. The card also has a **Book** link for the
+first displayed stay. Its footer states when the openings were observed and,
+when a displayed stay exceeds ten nights, warns that the provider may not
+support that duration. The status
 bar reports a warning whenever scan data has not changed for more than one hour.
 It also reports when the local event stream disconnects and reconnects
 automatically after the map server is restarted. When a scan is marked failed, or
@@ -127,7 +147,7 @@ event.
 For Washington State Parks, GoingToCamp supplies opaque internal resource IDs
 instead of useful campsite labels. The map hides those IDs and groups identical
 availability windows, showing the number of sites available for each date range.
-Washington review links can open the provider with a selected stay's dates;
+Washington booking links can open the provider with a selected stay's dates;
 recreation.gov opens the campground's availability page. Recreation.gov does
 not offer a reliable row-specific deep link, so choose the shown site and dates
 there.
@@ -149,6 +169,8 @@ the latest scan is visibly marked as not rechecked; its current availability is
 unknown rather than treated as newly checked.
 Press Ctrl-C in the map server's terminal to stop it.
 
+The loopback server accepts only same-origin browser requests, limits simultaneous
+event streams, denies framing, and serves a restrictive content security policy.
 The map installs no Python package and loads no third-party JavaScript. While the
 map is open, the browser requests only the visible raster tiles from OpenStreetMap
 and displays the required attribution. This reveals your IP address and viewed map
@@ -257,11 +279,16 @@ the Friday night plus the Saturday night:
 
 The watcher POSTs a JSON payload to `CAMPWATCH_WEBHOOK_URL` for each new opening.
 Webhook URLs must use HTTPS, must resolve to public addresses by default, and
-redirects are rejected. These checks prevent accidental plaintext delivery and
-requests to local services.
+redirects are rejected. The validated DNS address is pinned to the TLS connection,
+preventing a second DNS lookup from rebinding the request to a private service.
+These checks prevent accidental plaintext delivery and requests to local services.
 The payload includes a human-readable text field (key configurable) plus
-structured `sites` data with per-site booking URLs. This works out-of-the-box
-with:
+a bounded sample of structured `sites` data with per-site booking URLs, aggregate
+`stay_groups`, and full/truncated counts. Human text, sampled runs, group details,
+and the total JSON body all have explicit size limits. A failed delivery is saved
+atomically to the Git-ignored `webhook_outbox.json` and retried with bounded
+backoff; the completed alert baseline advances only after a send or durable queue
+write succeeds. This works out-of-the-box with:
 
 - **Discord** — use a channel webhook URL, keep `CAMPWATCH_WEBHOOK_TEXT_KEY=content`.
 - **Slack** — incoming webhook URL, set `CAMPWATCH_WEBHOOK_TEXT_KEY=text`.

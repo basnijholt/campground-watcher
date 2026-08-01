@@ -226,6 +226,26 @@ class ProviderClientTests(unittest.TestCase):
 
 
 class AvailabilityMapTests(unittest.TestCase):
+    def test_map_rejects_unbounded_or_overflowing_saved_runs(self):
+        self.assertEqual(
+            availability_map._parse_runs(
+                [
+                    "A|2026-08-01|2",
+                    "B|2026-08-01|367",
+                    "C|9999-12-31|2",
+                    "D|2026-08-01|not-a-number",
+                ]
+            ),
+            [
+                {
+                    "site": "A",
+                    "start": "2026-08-01",
+                    "nights": 2,
+                    "last_night": "2026-08-02",
+                }
+            ],
+        )
+
     def test_map_data_joins_available_state_with_local_coordinates(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -394,6 +414,18 @@ class AvailabilityMapTests(unittest.TestCase):
             "<!doctype html>",
             Path(availability_map.__file__).read_text(encoding="utf-8").lower(),
         )
+        card_manager_path = availability_map.HERE / "card_manager.js"
+        self.assertEqual(
+            availability_map.CARD_MANAGER_JS,
+            card_manager_path.read_text(encoding="utf-8"),
+        )
+        self.assertIn('<script src="/card_manager.js" defer></script>', availability_map.MAP_HTML)
+        availability_model_path = availability_map.HERE / "availability_model.js"
+        self.assertEqual(
+            availability_map.AVAILABILITY_MODEL_JS,
+            availability_model_path.read_text(encoding="utf-8"),
+        )
+        self.assertIn('<script src="/availability_model.js" defer></script>', availability_map.MAP_HTML)
         self.assertIn('<script src="/availability_map.js" defer></script>', availability_map.MAP_HTML)
         self.assertNotIn('"use strict";', availability_map.MAP_HTML)
         self.assertIn("https://tile.openstreetmap.org/{z}/{x}/{y}.png", availability_map.MAP_JS)
@@ -401,11 +433,17 @@ class AvailabilityMapTests(unittest.TestCase):
         self.assertIn('id="date-from" type="date"', availability_map.MAP_HTML)
         self.assertIn('id="date-through" type="date"', availability_map.MAP_HTML)
         self.assertIn('id="stay-nights" type="number"', availability_map.MAP_HTML)
-        self.assertNotIn('id="stay-nights" type="number" min="1" max=', availability_map.MAP_HTML)
+        self.assertIn('id="stay-nights" type="number" min="1" max="90" step="1"', availability_map.MAP_HTML)
+        self.assertIn('id="campground-search" type="search"', availability_map.MAP_HTML)
+        self.assertIn('id="provider-filter"', availability_map.MAP_HTML)
+        self.assertIn('id="scan-filter"', availability_map.MAP_HTML)
+        self.assertIn('id="sort-results"', availability_map.MAP_HTML)
         self.assertIn('id="coverage-notice"', availability_map.MAP_HTML)
         self.assertIn('id="stay-limit-notice"', availability_map.MAP_HTML)
         self.assertIn("Results update immediately from saved scans.", availability_map.MAP_HTML)
-        self.assertIn('id="availability-card" role="dialog"', availability_map.MAP_HTML)
+        self.assertIn('id="cards"', availability_map.MAP_HTML)
+        self.assertIn('id="shortcut-help-backdrop"', availability_map.MAP_HTML)
+        self.assertIn('Keyboard shortcuts', availability_map.MAP_HTML)
         self.assertIn('className = "run-table"', availability_map.MAP_JS)
         self.assertIn('["Check in", "Observed stays"]', availability_map.MAP_JS)
         self.assertIn('function availabilityDateGroups(location)', availability_map.MAP_JS)
@@ -415,9 +453,16 @@ class AvailabilityMapTests(unittest.TestCase):
         self.assertIn('function renderStayLimitNotice()', availability_map.MAP_JS)
         self.assertIn('for (let checkIn = run.first_check_in;', availability_map.MAP_JS)
         self.assertIn('function makeStayChip(location, run)', availability_map.MAP_JS)
-        self.assertIn('This is not a provider-validated booking.', availability_map.MAP_JS)
-        self.assertIn('function reviewUrlFor(location, run = null)', availability_map.MAP_JS)
-        self.assertNotIn('function bookingUrlFor(', availability_map.MAP_JS)
+        self.assertIn('const cumulativeSites = new Set();', availability_map.MAP_JS)
+        self.assertIn('observedStay.sites.forEach(site => cumulativeSites.add(site));', availability_map.MAP_JS)
+        self.assertIn('chip.href = bookingUrlFor(location, run);', availability_map.MAP_JS)
+        self.assertIn('function bookingUrlFor(location, run = null)', availability_map.MAP_JS)
+        self.assertIn('link.textContent = "Book";', availability_map.MAP_JS)
+        self.assertIn('Availability may have changed: all openings shown were observed', availability_map.MAP_JS)
+        self.assertIn('The provider may not support booking a reservation for a displayed stay longer than 10 nights.', availability_map.MAP_JS)
+        self.assertIn('const cardManager = new CardManager({maxPinned: 5});', availability_map.MAP_JS)
+        self.assertIn('function createCardElement(key, returnFocus = null)', availability_map.MAP_JS)
+        self.assertIn('function dismissUnpinnedCards(exceptKey = null)', availability_map.MAP_JS)
         self.assertIn('function formatCheckInDate(value)', availability_map.MAP_JS)
         self.assertIn('checkIn.textContent = formatCheckInDate(group.checkIn)', availability_map.MAP_JS)
         self.assertIn('function formatDriveDuration(seconds)', availability_map.MAP_JS)
@@ -427,9 +472,9 @@ class AvailabilityMapTests(unittest.TestCase):
         self.assertIn('Stale availability data:', availability_map.MAP_JS)
         self.assertIn('const FRESH_SCAN_COMMAND = "python3 watch.py --all-once"', availability_map.MAP_JS)
         self.assertIn('freshness.addEventListener("click", copyFreshScanCommand)', availability_map.MAP_JS)
-        self.assertIn('id="card-pin"', availability_map.MAP_HTML)
+        self.assertIn('pin.className = "card-action";', availability_map.MAP_JS)
         self.assertIn('resize: both', availability_map.MAP_HTML)
-        self.assertIn('function placeCardNear(anchor)', availability_map.MAP_JS)
+        self.assertIn('function placeCardNear(anchor, size)', availability_map.MAP_JS)
         self.assertIn('tabindex="0"', availability_map.MAP_HTML)
         self.assertIn('function panBy(screenX, screenY)', availability_map.MAP_JS)
         self.assertIn('function zoomAt(clientX, clientY, amount)', availability_map.MAP_JS)
@@ -439,13 +484,17 @@ class AvailabilityMapTests(unittest.TestCase):
         self.assertIn('id="fit" aria-label="Fit displayed campgrounds"', availability_map.MAP_HTML)
         self.assertNotIn('.marker.rg', availability_map.MAP_HTML)
         self.assertIn('provider.textContent = `Provider: ${location.provider}`', availability_map.MAP_JS)
-        self.assertIn('function closeLocation()', availability_map.MAP_JS)
+        self.assertIn('function closeCard(key, {explicit = false} = {})', availability_map.MAP_JS)
         self.assertIn('new EventSource("/events")', availability_map.MAP_JS)
         self.assertIn('events.addEventListener("map-update", handleMapUpdate)', availability_map.MAP_JS)
         self.assertNotIn("setInterval(refreshData, 5000)", availability_map.MAP_JS)
         self.assertIn("setInterval(renderStatus, 60_000)", availability_map.MAP_JS)
-        self.assertIn("function refreshOpenCard()", availability_map.MAP_JS)
-        self.assertIn("renderMarkers();\n  refreshOpenCard();", availability_map.MAP_JS)
+        self.assertIn("function refreshOpenCards()", availability_map.MAP_JS)
+        self.assertIn("renderMarkers();\n  refreshOpenCards();", availability_map.MAP_JS)
+        self.assertIn('className = "marker cluster"', availability_map.MAP_JS)
+        self.assertIn("MAX_STAY_OPTIONS_PER_DATE", availability_map.MAP_JS)
+        self.assertIn("DEFAULT_DATE_PAGE_SIZE", availability_map.MAP_JS)
+        self.assertTrue(availability_map.MAP_HTML.rstrip().endswith("</html>"))
         self.assertEqual(availability_map._handler().protocol_version, "HTTP/1.1")
 
     def test_map_handler_silently_ignores_client_disconnects(self):
@@ -455,6 +504,46 @@ class AvailabilityMapTests(unittest.TestCase):
                 availability_map.BaseHTTPRequestHandler, "handle", side_effect=error
             ):
                 self.assertIsNone(handler.handle())
+
+    def test_map_handler_rejects_cross_site_requests(self):
+        handler = object.__new__(availability_map._handler())
+        handler.server = mock.Mock(server_address=("127.0.0.1", 8765))
+        handler.path = "/data.json"
+        handler._send = mock.Mock()
+
+        for headers in (
+            {"Host": "127.0.0.1:8765", "Sec-Fetch-Site": "cross-site"},
+            {"Host": "127.0.0.1:8765", "Origin": "https://attacker.example"},
+            {"Host": "127.0.0.1:8765", "Origin": "http://localhost:9999"},
+        ):
+            with self.subTest(headers=headers):
+                handler.headers = headers
+                handler._send.reset_mock()
+                handler.do_GET()
+                self.assertEqual(handler._send.call_args.args[0], 403)
+
+        handler.headers = {
+            "Host": "127.0.0.1:8765",
+            "Origin": "http://localhost:8765",
+            "Sec-Fetch-Site": "same-origin",
+        }
+        handler._send.reset_mock()
+        with mock.patch.object(availability_map, "build_map_data", return_value={}):
+            handler.do_GET()
+        self.assertEqual(handler._send.call_args.args[0], 200)
+
+    def test_map_handler_caps_event_streams(self):
+        handler = object.__new__(availability_map._handler())
+        handler.server = mock.Mock(server_address=("127.0.0.1", 8765))
+        handler.headers = {"Host": "127.0.0.1:8765"}
+        handler.path = "/events"
+        handler._send = mock.Mock()
+        slots = mock.Mock()
+        slots.acquire.return_value = False
+        with mock.patch.object(availability_map, "EVENT_STREAM_SLOTS", slots):
+            handler.do_GET()
+        slots.acquire.assert_called_once_with(blocking=False)
+        self.assertEqual(handler._send.call_args.args[0], 503)
 
 
 class CandidateDiscoveryTests(unittest.TestCase):
@@ -1038,19 +1127,170 @@ class WebhookTests(unittest.TestCase):
                 "https://example.com/hook",
             )
 
-    def test_send_trigger_fails_soft_without_leaking_url(self):
+    def test_webhook_transport_connects_to_the_validated_address_without_redirects(self):
+        connections = []
+
+        class Response:
+            status = 302
+
+            def read(self, _limit):
+                return b""
+
+        class Connection:
+            def __init__(self, hostname, port, address, *, timeout):
+                self.details = (hostname, port, address, timeout)
+                self.requests = []
+                connections.append(self)
+
+            def request(self, method, target, *, body, headers):
+                self.requests.append((method, target, body, headers))
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                return None
+
+        parsed = watch.urllib.parse.urlsplit("https://example.com/hook?x=1")
+        with (
+            mock.patch.object(
+                watch,
+                "_validated_webhook_destination",
+                return_value=(parsed, ("93.184.216.34",)),
+            ),
+            mock.patch.object(watch, "_PinnedHTTPSConnection", Connection),
+        ):
+            self.assertEqual(watch._post_webhook(parsed.geturl(), {"ok": True}), 302)
+        self.assertEqual(
+            connections[0].details,
+            ("example.com", 443, "93.184.216.34", 30),
+        )
+        self.assertEqual(len(connections[0].requests), 1)
+        self.assertEqual(connections[0].requests[0][0:2], ("POST", "/hook?x=1"))
+
+    def test_webhook_payload_is_bounded_and_keeps_compatible_site_samples(self):
+        runs = []
+        new_runs = []
+        for index in range(250):
+            site = f"Site {index} " + "x" * 1_000
+            state_key = f"{site}|2030-08-{index + 1:02d}|2"
+            new_runs.append(state_key)
+            runs.append(
+                {
+                    "state_key": state_key,
+                    "site": site,
+                    "start": f"2030-08-{index + 1:02d}",
+                    "nights": 2,
+                    "weekend": "all",
+                    "booking_url": "https://example.com/book/" + "y" * 3_000,
+                }
+            )
+        with (
+            mock.patch.object(watch, "WEBHOOK_URL", "https://discord.com/api/webhooks/1/token"),
+            mock.patch.object(watch, "WEBHOOK_TEXT_KEY", "content"),
+        ):
+            payload = watch._bounded_webhook_payload(
+                "Camp " + "z" * 1_000,
+                "https://example.com",
+                "camp-event",
+                new_runs,
+                runs,
+            )
+        self.assertLessEqual(len(payload["content"]), watch.MAX_WEBHOOK_TEXT_CHARS)
+        self.assertLessEqual(len(json.dumps(payload).encode()), watch.MAX_WEBHOOK_BODY_BYTES)
+        self.assertLessEqual(len(payload["sites"]), watch.MAX_WEBHOOK_SAMPLED_RUNS)
+        self.assertLessEqual(len(payload["stay_groups"]), watch.MAX_WEBHOOK_DETAIL_GROUPS)
+        self.assertTrue(payload["sites_truncated"])
+        self.assertTrue(payload["new_runs_truncated"])
+        self.assertEqual(payload["allowed_mentions"], {"parse": []})
+        self.assertEqual(
+            set(payload["sites"][0]),
+            {"site", "start", "nights", "weekend", "booking_url"},
+        )
+
+    def test_send_trigger_queues_failure_without_leaking_url(self):
         with tempfile.TemporaryDirectory() as tmp:
             secret_url = "https://example.com/a-secret-token"
             with (
                 mock.patch.object(watch, "NOTIFY_ENABLED", True),
                 mock.patch.object(watch, "WEBHOOK_URL", secret_url),
                 mock.patch.object(watch, "SENT_PINGS", Path(tmp) / "pings.json"),
+                mock.patch.object(watch, "WEBHOOK_OUTBOX", Path(tmp) / "outbox.json"),
                 mock.patch.object(watch, "_post_webhook", side_effect=OSError("boom")),
+                mock.patch.object(watch, "log") as logger,
+            ):
+                self.assertTrue(watch.send_trigger("X", "u", ["a|2026-08-07|2"], []))
+                outbox = json.loads((Path(tmp) / "outbox.json").read_text())
+                self.assertEqual(len(outbox), 1)
+                logged = " ".join(str(call) for call in logger.call_args_list)
+                self.assertNotIn(secret_url, logged)
+
+    def test_send_trigger_reports_when_send_and_queue_both_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            secret_url = "https://example.com/a-secret-token"
+            with (
+                mock.patch.object(watch, "NOTIFY_ENABLED", True),
+                mock.patch.object(watch, "WEBHOOK_URL", secret_url),
+                mock.patch.object(watch, "SENT_PINGS", Path(tmp) / "pings.json"),
+                mock.patch.object(watch, "WEBHOOK_OUTBOX", Path(tmp) / "outbox.json"),
+                mock.patch.object(watch, "_post_webhook", side_effect=OSError("boom")),
+                mock.patch.object(watch, "_queue_webhook_payload", side_effect=OSError("disk full")),
                 mock.patch.object(watch, "log") as logger,
             ):
                 self.assertFalse(watch.send_trigger("X", "u", ["a|2026-08-07|2"], []))
                 logged = " ".join(str(call) for call in logger.call_args_list)
                 self.assertNotIn(secret_url, logged)
+
+    def test_send_trigger_fails_soft_when_payload_cannot_be_built(self):
+        with (
+            mock.patch.object(watch, "NOTIFY_ENABLED", True),
+            mock.patch.object(watch, "WEBHOOK_URL", "https://example.com/hook"),
+            mock.patch.object(watch, "_load_sent_pings", return_value={}),
+            mock.patch.object(watch, "_event_is_queued", return_value=False),
+            mock.patch.object(
+                watch, "_bounded_webhook_payload", side_effect=KeyError("state_key")
+            ),
+            mock.patch.object(watch, "log"),
+        ):
+            self.assertFalse(watch.send_trigger("X", "u", ["bad"], [{}]))
+
+    def test_webhook_outbox_retries_and_removes_successful_delivery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = dt.datetime(2030, 8, 1, 12, 0, 0)
+            outbox = root / "outbox.json"
+            outbox.write_text(json.dumps([
+                {
+                    "event_id": "camp-event",
+                    "payload": {"content": "hello"},
+                    "attempts": 0,
+                    "next_attempt_at": now.isoformat(),
+                }
+            ]))
+            with (
+                mock.patch.object(watch, "NOTIFY_ENABLED", True),
+                mock.patch.object(watch, "WEBHOOK_URL", "https://example.com/hook"),
+                mock.patch.object(watch, "WEBHOOK_OUTBOX", outbox),
+                mock.patch.object(watch, "SENT_PINGS", root / "pings.json"),
+                mock.patch.object(watch, "_post_webhook", return_value=204) as post,
+            ):
+                self.assertEqual(watch.flush_webhook_outbox(now=now), 1)
+            post.assert_called_once()
+            self.assertEqual(json.loads(outbox.read_text()), [])
+            self.assertIn("camp-event", json.loads((root / "pings.json").read_text()))
+
+    def test_full_webhook_outbox_is_preserved_instead_of_dropping_an_alert(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outbox = Path(tmp) / "outbox.json"
+            original = [
+                {"event_id": f"event-{index}", "payload": {}}
+                for index in range(watch.MAX_WEBHOOK_OUTBOX_ITEMS)
+            ]
+            outbox.write_text(json.dumps(original))
+            with mock.patch.object(watch, "WEBHOOK_OUTBOX", outbox):
+                with self.assertRaisesRegex(RuntimeError, "full"):
+                    watch._queue_webhook_payload("new-event", {"content": "hello"})
+            self.assertEqual(json.loads(outbox.read_text()), original)
 
 
 class RunnerTests(unittest.TestCase):

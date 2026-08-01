@@ -5,6 +5,7 @@ cron.log
 last_state.json
 last_complete_state.json
 sent_pings.json
+webhook_outbox.json
 schedule_state.json
 scan_progress.json
 *.run.lock
